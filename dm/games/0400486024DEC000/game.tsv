@@ -90,3 +90,5 @@ render_scale_marks	0.25=Potato
 frame_wg	off
 # The model optimizer's thread only gets idle time on the console (priority 55 under strict priorities); under the QoS map it competed with the frame's threads for the
 # iPhone's two performance cores, 700-770 ms of CPU a second through whole area visits (hle_thread.c thread_main; Hookshot PR 959 found the same on PCs)
+# Pool tables give a finalized texture's ID the dummy instead of making its texture again: about 2.5 GB at the house-to-forest change (upstream PR #1393, open; from the kid-with-sword-remake fork's FF line, HookLink 1.9 test42)
+pool_skip_retired	on
