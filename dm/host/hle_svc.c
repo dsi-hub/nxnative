@@ -303,12 +303,19 @@ static void *alias_windows_thread(void *arg);
 // figures are read at most every 200 ms: a map is not a hot call, but a scene load makes thousands
 static int mem_cutoff_hit(double *held_gb, double *room_gb) {
     static _Atomic uint64_t at; static _Atomic int hit; static double held, room; static int64_t cut = -1, min_room;
-    if (cut < 0) { const char *c = getenv("DM_MEM_CUTOFF_MB"), *r = getenv("DM_MEM_ROOM_MIN_MB"); cut = (c && *c ? atoll(c) : 10240) << 20; min_room = (r && *r ? atoll(r) : 768) << 20; }
+    // The default cutoff is the iPhone's: a Mac has swap and no memory limit for the app, and with the limit of 10 GB a Mac (an M1 Pro, HookLink 1.8) refused the game's
+    // maps in Kakariko's Spider House at 2.14 GB mapped, and the game froze. DM_MEM_CUTOFF_MB=<MB> sets one on a Mac too
+#if TARGET_OS_IPHONE
+    enum { DEF_CUT_MB = 10240 };
+#else
+    enum { DEF_CUT_MB = 0 };
+#endif
+    if (cut < 0) { const char *c = getenv("DM_MEM_CUTOFF_MB"), *r = getenv("DM_MEM_ROOM_MIN_MB"); cut = (c && *c ? atoll(c) : DEF_CUT_MB) << 20; min_room = (r && *r ? atoll(r) : 768) << 20; }
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); uint64_t now = (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
     if (now - atomic_load(&at) >= 200) {
         atomic_store(&at, now);
         task_vm_info_data_t vi; mach_msg_type_number_t n = TASK_VM_INFO_COUNT; int h = 0;
-        if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) == KERN_SUCCESS) { held = (double)vi.phys_footprint + (double)vi.external; if (cut > 0 && held > (double)cut) h = 1; }
+        if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) == KERN_SUCCESS) { held = (double)vi.phys_footprint; if (cut > 0 && held > (double)cut) h = 1; }
 #if TARGET_OS_IPHONE
         uint64_t left = os_proc_available_memory(); room = (double)left; if (min_room > 0 && left && left < (uint64_t)min_room) h = 1;
 #endif
