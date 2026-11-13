@@ -14,11 +14,13 @@ public func dmGameMenu() -> UnsafeMutableRawPointer {
 }
 
 private func gameMenuItems() -> [UIMenuElement] {
-    let names = ["2D", "3D", "Tap", "Mobile"]
-    let layouts = (0..<4).filter { dm_pad_layout_offered(Int32($0)) }.map { l in
+    let names = ["2D", "3D", "Tap", "Mobile", "Custom"]   // Custom: the Mobile layout with the player's own places and sizes (DmGamepad.m)
+    let layouts = (0..<5).filter { dm_pad_layout_offered(Int32($0)) }.map { l in
         UIAction(title: names[l], state: dm_pad_layout() == l ? .on : .off) { _ in dm_pad_layout_set(Int32(l)) }
     }
-    let layout = UIMenu(title: "Controller layout", options: .singleSelection, children: layouts)   // a choice's value shows in its submenu: a subtitle would make each row two lines
+    var layoutRows: [UIMenuElement] = [UIMenu(options: [.displayInline, .singleSelection], children: layouts)]
+    if dm_pad_layout() == 4 { layoutRows.append(UIAction(title: "Edit custom layout\u{2026}", image: UIImage(systemName: "hand.draw")) { _ in dm_pad_custom_edit() }) }
+    let layout = UIMenu(title: "Controller layout", children: layoutRows)   // a choice's value shows in its submenu: a subtitle would make each row two lines
     var items: [UIMenuElement] = []
     var placed = false
     if let m = gameMenuModel {

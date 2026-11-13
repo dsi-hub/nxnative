@@ -135,6 +135,7 @@ static const CGFloat
     K_CLICK_X = 102, K_CLICK_R = 17;                // L3 / R3: centre from the outer edge (level with ZL / ZR), radius
 static const int k_btns[] = {B_ZL, B_L, B_ZR, B_R, B_MINUS, B_PLUS, B_LS, B_RS};   // keys locked at touch-down (L3 / R3 only in the 3D layout)
 static NSString *const k_layout_key = @"DmPadLayout";   // NSUserDefaults: 0 = 2D, 1 = 3D, 2 = Tap, 3 = Native (DM_GAME_PAD_LAYOUT's numbers)
+static NSString *const k_custom_key = @"DmPadCustom";   // NSUserDefaults: 3 numbers a key (x, y, size), B_N + 1 rows, the stick last
 static NSString *const k_native_key = @"DmPadNativeOffered";   // a profile that starts in Native switches to it once, over a layout saved before Native existed
 // Native layout (in points of an 874 x 402 landscape screen, scaled by gu; x from the corner rectangle's edges, y from its top or bottom): centre, radius
 static const int k_nat[] = {B_B, B_A, B_R, B_ZL, B_ZR, B_X, B_Y, B_PLUS, B_MINUS, B_LEFT, B_UP, B_RIGHT, B_DOWN};
@@ -173,6 +174,9 @@ static void pads_start(void);   // Physical controllers, below
     DmLayout _layout;
     UITouch *_game[16];                            // touches on the game's touch screen by finger slot
     BOOL _native;                                  // the Native layout is current
+    BOOL _custom, _editing;                        // Custom: the Native layout with the player's own places and sizes (k_custom_key); _editing: touches move keys instead of pressing them
+    CGFloat _cOff[B_N + 1][3];                     // per key, and the stick at B_N: x and y offsets in the layout's units (gu) and a size factor
+    int _editKey; UITouch *_editTouch; CGPoint _editLast; UIView *_editBar; UILabel *_editLabel;
     CALayer *_nat, *_nk[B_N]; CAShapeLayer *_nbase[B_N];   // Native: its layers, one glass disc per key and the disc's base (its fill shows the press)
     CALayer *_nring, *_nknob; CAShapeLayer *_nknobBase;    // Native: the left stick's ring and knob
     CGPoint _lCentre;                              // Native: the left stick's centre while held (where its touch landed, or the ring)
@@ -351,7 +355,7 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
         if (DM_GAME_PAD_LAYOUT == 3 && ![ud boolForKey:k_native_key]) { l = 3; [ud setBool:YES forKey:k_native_key]; [ud setObject:@(3) forKey:k_layout_key]; }   // once: a layout saved before Native existed gives way to it
         if (l == 2 && dm_opmode() != 0) l = 0;   // Tap only in handheld mode (env.txt's DM_OPMODE may have changed it)
         if (l < 0 || l > 3) l = 0;
-        _full = l == 1; _tap = l == 2; _native = l == 3;
+        _full = l == 1; _tap = l == 2; _native = l == 3 || l == 4; _custom = l == 4; _editKey = -1; [self customLoad];
         [self applyLayout];
         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
         [nc addObserver:self selector:@selector(padsChanged:) name:GCControllerDidConnectNotification object:nil];
@@ -370,11 +374,11 @@ static BOOL fullOnly(int b) { return b == B_LS || b == B_RS || b >= B_LEFT; }   
     _nat.hidden = !_native;
     [CATransaction commit];
 }
-- (int)padLayout { return _native ? 3 : _tap ? 2 : _full ? 1 : 0; }
+- (int)padLayout { return _native ? (_custom ? 4 : 3) : _tap ? 2 : _full ? 1 : 0; }
 - (void)setPadLayout:(int)l {   // the in-game menu's pick: release every touch first (no key stays held), save, lay out again
     if (l == 2 && dm_opmode() != 0) l = 0;
-    [self reset];
-    _full = l == 1; _tap = l == 2; _native = l == 3;
+    [self reset]; [self customEdit:NO];
+    _full = l == 1; _tap = l == 2; _native = l == 3 || l == 4; _custom = l == 4;
     [NSUserDefaults.standardUserDefaults setObject:@(l) forKey:k_layout_key];
     [self applyLayout]; [self setNeedsLayout];
 }
@@ -418,9 +422,53 @@ static CGPoint side(CGRect s, int right, CGFloat dx, CGFloat y) { return CGPoint
         case B_RIGHT: x = L + (N_STICK_X + 32) * g; y = Bt - 234 * g; rr = 17; break;
         default: x = R - 34 * g; y = T + N_TOP_Y * g; rr = N_TOP_R; break;   // −
     }
+    if (_custom) {   // the player's place and size, kept on the screen
+        x += _cOff[b][0] * g; y += _cOff[b][1] * g; rr *= _cOff[b][2];
+        x = MIN(MAX(x, CGRectGetMinX(self.bounds) + rr * g), CGRectGetMaxX(self.bounds) - rr * g); y = MIN(MAX(y, CGRectGetMinY(self.bounds) + rr * g), CGRectGetMaxY(self.bounds) - rr * g);
+    }
     *c = CGPointMake(x, y); *r = rr * g;
 }
-- (CGPoint)natStickHome { CGRect s = self.corner; CGFloat g = self.gu; return CGPointMake(CGRectGetMinX(s) + N_STICK_X * g, CGRectGetMaxY(s) - N_STICK_Y * g); }
+- (CGPoint)natStickHome { CGRect s = self.corner; CGFloat g = self.gu; CGPoint h = CGPointMake(CGRectGetMinX(s) + N_STICK_X * g, CGRectGetMaxY(s) - N_STICK_Y * g);
+    if (_custom) { CGFloat r = N_RING_R * g; h.x = MIN(MAX(h.x + _cOff[B_N][0] * g, r), self.bounds.size.width - r); h.y = MIN(MAX(h.y + _cOff[B_N][1] * g, r), self.bounds.size.height - r); }
+    return h; }
+// Custom layout: its places and sizes, and the edit mode the in-game menu starts (Edit custom layout): a drag moves the key or the stick under the finger, the bar's
+// Smaller / Bigger resize the key touched last, Reset goes back to the Mobile layout's places, Done ends it. No key reaches the game while editing
+- (void)customLoad {
+    for (int i = 0; i <= B_N; i++) { _cOff[i][0] = _cOff[i][1] = 0; _cOff[i][2] = 1; }
+    NSArray *a = [NSUserDefaults.standardUserDefaults arrayForKey:k_custom_key]; if (a.count != 3 * (B_N + 1)) return;
+    for (int i = 0; i <= B_N; i++) { for (int k = 0; k < 3; k++) { id v = a[3 * i + k]; if (![v isKindOfClass:NSNumber.class]) { [self customLoad0]; return; } _cOff[i][k] = [v doubleValue]; }
+        if (!(_cOff[i][2] >= 0.6 && _cOff[i][2] <= 1.8) || !isfinite(_cOff[i][0]) || !isfinite(_cOff[i][1])) { [self customLoad0]; return; } }
+}
+- (void)customLoad0 { for (int i = 0; i <= B_N; i++) { _cOff[i][0] = _cOff[i][1] = 0; _cOff[i][2] = 1; } }
+- (void)customSave { NSMutableArray *a = [NSMutableArray array]; for (int i = 0; i <= B_N; i++) for (int k = 0; k < 3; k++) [a addObject:@(_cOff[i][k])]; [NSUserDefaults.standardUserDefaults setObject:a forKey:k_custom_key]; }
+- (void)customReset { [self customLoad0]; [self customSave]; _editKey = -1; [self editNote]; [self setNeedsLayout]; }
+- (void)editNote { static NSString *const nm[B_N] = { [B_A] = @"A", [B_B] = @"B", [B_X] = @"X", [B_Y] = @"Y", [B_R] = @"R", [B_ZL] = @"ZL", [B_ZR] = @"ZR", [B_PLUS] = @"+", [B_MINUS] = @"\u2212", [B_UP] = @"Up", [B_DOWN] = @"Down", [B_LEFT] = @"Left", [B_RIGHT] = @"Right" };
+    _editLabel.text = _editKey < 0 ? @"Drag a button or the stick" : _editKey == B_N ? @"Stick" : [NSString stringWithFormat:@"%@  %d%%", nm[_editKey] ?: @"Key", (int)lround(_cOff[_editKey][2] * 100)]; }
+- (void)editSize:(UIButton *)b { if (_editKey < 0 || _editKey >= B_N) return; _cOff[_editKey][2] = MIN(MAX(_cOff[_editKey][2] + (b.tag ? 0.1 : -0.1), 0.6), 1.8); [self customSave]; [self editNote]; [self setNeedsLayout]; }
+- (void)editDone { [self customEdit:NO]; }
+- (void)customEdit:(BOOL)on {
+    if (on == _editing || (on && !_custom)) return;
+    [self reset]; _editing = on; _editTouch = nil; _editKey = -1;
+    [_editBar removeFromSuperview]; _editBar = nil; _editLabel = nil;
+    if (!on) { [self customSave]; return; }
+    UIStackView *bar = [UIStackView new]; bar.axis = UILayoutConstraintAxisHorizontal; bar.spacing = 8; bar.alignment = UIStackViewAlignmentCenter;
+    bar.layoutMargins = UIEdgeInsetsMake(6, 12, 6, 12); bar.layoutMarginsRelativeArrangement = YES;
+    UIView *bg = [UIView new]; bg.backgroundColor = [UIColor colorWithWhite:0 alpha:0.72]; bg.layer.cornerRadius = 12; bg.translatesAutoresizingMaskIntoConstraints = NO; [bar insertSubview:bg atIndex:0];
+    [NSLayoutConstraint activateConstraints:@[[bg.leadingAnchor constraintEqualToAnchor:bar.leadingAnchor], [bg.trailingAnchor constraintEqualToAnchor:bar.trailingAnchor], [bg.topAnchor constraintEqualToAnchor:bar.topAnchor], [bg.bottomAnchor constraintEqualToAnchor:bar.bottomAnchor]]];
+    UILabel *l = [UILabel new]; l.textColor = UIColor.whiteColor; l.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold]; [bar addArrangedSubview:l]; _editLabel = l;
+    NSArray *t = @[@"Smaller", @"Bigger", @"Reset", @"Done"]; SEL sel[4] = { @selector(editSize:), @selector(editSize:), @selector(customReset), @selector(editDone) };
+    for (int i = 0; i < 4; i++) { UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem]; [b setTitle:t[i] forState:UIControlStateNormal]; b.tag = i == 1; b.tintColor = i == 3 ? UIColor.systemYellowColor : UIColor.whiteColor;
+        b.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightBold]; [b addTarget:self action:sel[i] forControlEvents:UIControlEventTouchUpInside]; [bar addArrangedSubview:b]; }
+    bar.translatesAutoresizingMaskIntoConstraints = NO; [self addSubview:bar]; _editBar = bar;
+    [NSLayoutConstraint activateConstraints:@[[bar.centerXAnchor constraintEqualToAnchor:self.centerXAnchor], [bar.centerYAnchor constraintEqualToAnchor:self.centerYAnchor]]];
+    [self editNote];
+}
+- (void)editBegan:(NSSet<UITouch *> *)ts { if (_editTouch) return; UITouch *t = ts.anyObject; CGPoint p = [t locationInView:self];
+    int hit = [self btnAt:p]; if (hit < 0 && dist(p, self.natStickHome) <= N_RING_R * self.gu * 1.2) hit = B_N;
+    if (hit < 0) return; _editKey = hit; _editTouch = t; _editLast = p; [self editNote]; }
+- (void)editMoved:(NSSet<UITouch *> *)ts { if (!_editTouch || ![ts containsObject:_editTouch]) return; CGPoint p = [_editTouch locationInView:self]; CGFloat g = MAX(self.gu, 0.1);
+    _cOff[_editKey][0] += (p.x - _editLast.x) / g; _cOff[_editKey][1] += (p.y - _editLast.y) / g; _editLast = p; [self setNeedsLayout]; }
+- (void)editEnded:(NSSet<UITouch *> *)ts { if (_editTouch && [ts containsObject:_editTouch]) { _editTouch = nil; [self customSave]; } }
 - (BOOL)portraitControls { return _layout.separated && self.bounds.size.height > self.bounds.size.width; }
 - (CGPoint)portraitThumbCenter:(BOOL)right {
     CGRect s = self.safe;
@@ -592,6 +640,7 @@ int front_web_touch(void);
     return v == self && front_web_touch() && ![self controlAt:p] ? nil : v;
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if (_editing) { [self editBegan:ts]; return; }
     BOOL game = NO;
     for (UITouch *t in ts) {
         if (_padOff) { game |= [self gameBegin:t]; continue; }
@@ -622,6 +671,7 @@ int front_web_touch(void);
     [self recompute];
 }
 - (void)touchesMoved:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e {
+    if (_editing) { [self editMoved:ts]; return; }
     BOOL game = NO;
     for (UITouch *t in ts) {
         uint64_t v = [_owner objectForKey:t].unsignedLongLongValue; int c = (int)(v & 0xff); CGPoint p = [t locationInView:self];
@@ -644,8 +694,8 @@ int front_web_touch(void);
     if (game) [self pushGame];
     [self recompute];
 }
-- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:YES]; }
-- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { [self endTouches:ts tapped:NO]; }
+- (void)touchesEnded:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { if (_editing) { [self editEnded:ts]; return; } [self endTouches:ts tapped:YES]; }
+- (void)touchesCancelled:(NSSet<UITouch *> *)ts withEvent:(UIEvent *)e { if (_editing) { [self editEnded:ts]; return; } [self endTouches:ts tapped:NO]; }
 - (void)reset { [_owner removeAllObjects]; [_faceOf removeAllObjects]; _stick[0] = _stick[1] = nil; for (int i = 0; i < 16; i++) _game[i] = nil; [self pushGame]; [self recompute]; }
 
 // ---- Shapes ----
@@ -947,7 +997,8 @@ void dm_gamepad_arrange(UIView *view, DmLayout layout) { [(DmGamepad *)view arra
 void dm_gamepad_opmode_changed(void) { [g_view opmodeChanged]; }
 void dm_gamepad_touch_feedback(bool on) { [g_view setTouchFeedback:on]; }
 int dm_pad_layout(void) { return g_view ? [g_view padLayout] : 0; }
-bool dm_pad_layout_offered(int layout) { return layout == 0 || layout == 1 || layout == 3 || (layout == 2 && dm_opmode() == 0); }
+bool dm_pad_layout_offered(int layout) { return layout == 0 || layout == 1 || layout == 3 || layout == 4 || (layout == 2 && dm_opmode() == 0); }
+void dm_pad_custom_edit(void) { [g_view customEdit:YES]; }   // the in-game menu's Edit custom layout
 void dm_pad_layout_set(int layout) { [g_view setPadLayout:layout]; }
 void dm_gamepad_active(void) { dispatch_async(dispatch_get_main_queue(), ^{ for (GCController *c in GCController.controllers) dm_motion_rearm(c); }); }   // On become active: motion_apple.h
 void dm_gamepad_reset(void) {   // On resign active: release everything (a key held while switching away and released in background gets no "release")
