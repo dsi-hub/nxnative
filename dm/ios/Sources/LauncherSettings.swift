@@ -119,7 +119,8 @@ final class LauncherModel: ObservableObject {
     func applySaved() {
         for s in settings where !fixed.contains(s.env) {
             let v = values[s.env] ?? s.def
-            if !s.isDefault(v) { setenv(s.env, v, 1); fputs("launcher: \(s.env)=\(v) (saved choice)\n", stderr) }
+            setenv(s.env, v, 1)   // defaults too: a row's default can differ from the host's own (HookLink's per-device and preset defaults)
+            if !s.isDefault(v) { fputs("launcher: \(s.env)=\(v) (saved choice)\n", stderr) }
         }
     }
 }
