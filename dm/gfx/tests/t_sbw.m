@@ -81,6 +81,25 @@ int main(void){@autoreleasepool{
     rc_note((uint64_t)rec,1);
     CHECK("a later timestamp restores known zero after the opaque writer",rc_value((uint64_t)rec,&x)&&x==0);
     rc_forget();atomic_store(&g_rc_complete,completed);}
+    // Skip hidden objects (DM_NVN_RC_STALE): a pending samples-passed result is decided by the one that landed before it at that address; one that never landed, a write
+    // over the record, and the switch off keep it unknown
+    {static uint64_t q[4];uint64_t x=9,c0=atomic_load(&g_rc_complete);g_rc_stale_on=1;
+    rc_note((uint64_t)&q[0],2);
+    CHECK("stale: a first query is unknown",!rc_value((uint64_t)&q[0],&x));
+    rc_commit(c0+1);atomic_store(&g_rc_complete,c0+1);q[0]=0;   // its submission completes: the result (0, hidden) lands in memory
+    CHECK("stale: the landed result is read from memory",rc_value((uint64_t)&q[0],&x)==1&&x==0);
+    rc_note((uint64_t)&q[0],2);   // the next frame's query at the same address, pending
+    CHECK("stale: a pending query takes the result that landed before",rc_value((uint64_t)&q[0],&x)==2&&x==0);
+    g_rc_stale_on=0;CHECK("stale off: a pending query is unknown",!rc_value((uint64_t)&q[0],&x));g_rc_stale_on=1;
+    rc_note((uint64_t)&q[0],2);
+    CHECK("stale: a second report while the first is pending has no landed result",!rc_value((uint64_t)&q[0],&x));
+    rc_commit(c0+2);atomic_store(&g_rc_complete,c0+2);q[0]=5;rc_note((uint64_t)&q[0],2);
+    CHECK("stale: the newest landed result is the one taken",rc_value((uint64_t)&q[0],&x)==2&&x==5);
+    uint64_t fill=0;rc_write((uint64_t)&q[0],8,&fill,1);
+    CHECK("stale: a write over the record drops the result before",rc_value((uint64_t)&q[0],&x)!=2);
+    rc_note((uint64_t)&q[2],1);
+    CHECK("stale: a timestamp report is not taken for one",rc_value((uint64_t)&q[2],&x)==1&&x==0);
+    rc_forget();atomic_store(&g_rc_complete,c0);g_rc_stale_on=-1;}
     pend_reset();
     printf("t_sbw: %d checks, %d failed\n",checks,failed);return failed!=0;
 }}

@@ -1084,6 +1084,7 @@ static int g_rc_skip;   // logical queue state: a render-enable block evaluated 
 typedef struct rc_report {
     uint64_t addr, fence, value, report_fence, gpu_epoch;
     uint8_t known, dirty, readable, reported, report_dirty, unreliable, gpu_domain, opaque_unreliable, opaque_later, conservative;
+    uint8_t stale_ok; uint64_t stale;   // the samples-passed result that landed before the pending one (DM_NVN_RC_STALE)
     struct rc_report *page_next, *dirty_next;
 } rc_report;
 static nvn_hmap g_rc_reports={.klen=8}, g_rc_pages={.klen=8};
@@ -1147,8 +1148,27 @@ static void rc_query_operand(rc_report *r) {
     if (r->opaque_later) { r->known=0; r->opaque_later=0; }
     if (r->opaque_unreliable) r->unreliable=1;
 }
+// Skip hidden objects (DM_NVN_RC_STALE, on by default in HookLink): a condition on a samples-passed result that has not landed yet takes the result that landed before it at
+// the same address, the same query a frame earlier, instead of drawing. Metal has no predication to decide it on the GPU in time, so every one was drawn: in Hyrule Field
+// the one-draw foliage of task / mesh shaders behind the hills, about 9 ms of an iPhone 18 Pro Max's 19-20 ms frame there (their conditions all read unknown, 2026-11-07),
+// and 1,000-1,500 samples-passed reports a frame in the test31 log. The cost: an object coming into view is drawn one frame late. After cheemu21's X12 (kid-with-sword-remake,
+// its own report table); here on nxnative main's rc_report. DM_NVN_RC_STALE=0 draws them as before
+static int g_rc_stale_on = -1;
+static uint64_t g_rc_st_known, g_rc_st_stale, g_rc_st_unknown, g_rc_st_skipped;   // conditions since the last report line: decided from memory, decided from the result before, drawn unknown; skipped
+static int rc_stale_on(void) { if (g_rc_stale_on < 0) { const char *e = getenv("DM_NVN_RC_STALE"); g_rc_stale_on = !(e && !strcmp(e, "0")); MLOG("render conditions: %s (DM_NVN_RC_STALE)", g_rc_stale_on ? "a pending occlusion result takes the one that landed before it (Skip hidden objects)" : "a pending occlusion result draws"); } return g_rc_stale_on; }
+static void rc_report_line(uint64_t frame) {
+    uint64_t n = g_rc_st_known + g_rc_st_stale + g_rc_st_unknown; if (!n) return;
+    MLOG("render conditions up to frame %llu: %llu evaluated, %llu from memory, %llu from the result before (Skip hidden objects), %llu drawn unknown; %llu skipped (%.0f%%)", (unsigned long long)frame,
+         (unsigned long long)n, (unsigned long long)g_rc_st_known, (unsigned long long)g_rc_st_stale, (unsigned long long)g_rc_st_unknown, (unsigned long long)g_rc_st_skipped, 100.0 * (double)g_rc_st_skipped / (double)n);
+    g_rc_st_known = g_rc_st_stale = g_rc_st_unknown = g_rc_st_skipped = 0;
+}
 static void rc_note(uint64_t addr, int kind) {
     rc_report *r=rc_ensure(addr);
+    if (kind==2) {   // the result before this one, when it landed and nothing made it unreliable since
+        uint64_t done=atomic_load_explicit(&g_rc_complete,memory_order_acquire);
+        r->stale_ok = r->reported && !r->dirty && r->fence<=done && r->readable && !r->unreliable && !r->conservative;
+        if (r->stale_ok) r->stale = *(const volatile uint64_t *)addr;
+    } else r->stale_ok = 0;
     r->conservative=kind==3;   // counter kinds the host does not implement; a samples-passed result is read once it has landed (rc_value)
     // A condition compares adjacent 16-byte records. Either operand can be the
     // query; track its unreported neighbor before later explicit buffer writers.
@@ -1173,7 +1193,11 @@ static int rc_value(uint64_t addr, uint64_t *v) {   // 0 = unknown at encode tim
     if (r) {
         if (r->conservative) return 0;
         if (rc_gpu_unknown(r,done)) return 0;
-        if (r->dirty || r->fence>done) { *v=r->value; return r->known==255; }
+        if (r->dirty || r->fence>done) {
+            if (r->known==255) { *v=r->value; return 1; }
+            if (r->stale_ok && rc_stale_on()) { *v=r->stale; return 2; }   // 2: decided from the result before
+            *v=r->value; return 0;
+        }
         if (!r->readable || r->unreliable) return 0;
     }
     *v=*(const volatile uint64_t *)addr; return 1;
@@ -1191,6 +1215,7 @@ static uint8_t rc_source(uint64_t a, unsigned n, uint8_t *out, int *unreliable);
 static void rc_overwrite(rc_report *r, uint64_t dst, uint64_t n, const void *data, unsigned period, uint64_t src, uint64_t done, int opaque) {
     uint64_t lo=MAX(dst,r->addr), hi=MIN(dst+n,r->addr+8);
     if (hi<=lo) return;
+    r->stale_ok=0;   // a write over the record: the result before it no longer stands for it (Skip hidden objects)
     if (opaque && !r->gpu_domain) {
         // Keep ordinary timestamp forwarding unchanged, but retain this history
         // in case a later query makes the address a comparison operand.
@@ -15698,8 +15723,10 @@ void mtl_exec(const uint8_t *p) {
                 break; }
             case OP_RENDER_COND: { const p_render_cond *rc = a;   // recorded only with the profile key render_cond (hle_nvn.c)
                 if (rc->mode >= 2) { g_rc_skip = rc->mode == 3; PD("E %llu render enable %d", g_stat_pass, rc->mode == 2); }
-                else { uint64_t x = 0, y = 0; int known = rc_value(rc->addr, &x) & rc_value(rc->addr + 16, &y);
+                else { uint64_t x = 0, y = 0; int ka = rc_value(rc->addr, &x), kb = rc_value(rc->addr + 16, &y), known = ka && kb;
                     g_rc_skip = known && (rc->mode ? x == y : x != y);
+                    if (!known) g_rc_st_unknown++; else if (ka == 2 || kb == 2) g_rc_st_stale++; else g_rc_st_known++;
+                    g_rc_st_skipped += g_rc_skip;
                     PD("E %llu conditional render %s addr=%#llx values %llu / %llu%s%s", g_stat_pass, rc->mode ? "draw if not equal" : "draw if equal", (unsigned long long)rc->addr, (unsigned long long)x, (unsigned long long)y, known ? "" : " (unknown, drawn)", g_rc_skip ? " → not drawn" : ""); }
                 break; }
             case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); s->fence = g_fence + 1; s->fenced = 1;   // the fence value this submission (segment) commits with
@@ -17490,7 +17517,8 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
         else if (st == 2 && now - t0 >= at + dur) { st = 3; mtl_link_pause(0); MLOG("DM_TEST_LINK_STALL: resuming the display link (frame %llu)", (unsigned long long)atomic_load(&g_cur_frame)); }
     }
     if (ws_on()) { static uint64_t f0; uint64_t f = atomic_load(&g_cur_frame); if (!f0) f0 = f; else if (f >= f0 + 300) { ws_report(f, f - f0); f0 = f; } }
-    { static uint64_t pf0; uint64_t f = atomic_load(&g_cur_frame); if (!pf0) pf0 = f; else if (f >= pf0 + 600) { pb_report(f); pf0 = f; } }   // passes on the same attachments (pb_note, from cheemu21's X12)
+    { static uint64_t pf0; uint64_t f = atomic_load(&g_cur_frame); if (!pf0) pf0 = f; else if (f >= pf0 + 600) { pb_report(f); pf0 = f; } }
+    { static uint64_t rf0; uint64_t f = atomic_load(&g_cur_frame); if (!rf0) rf0 = f; else if (f >= rf0 + 300) { rc_report_line(f); rf0 = f; } }   // render conditions (Skip hidden objects)   // passes on the same attachments (pb_note, from cheemu21's X12)
     tex_t snap; uint64_t ss = 0; int slot = 0, whole = 0;
     if (!ev_val && mtl_snap_on()) {
         slot = (int)(atomic_load(&g_snap_next) % (uint64_t)g_snap_n); g_fg_seq++;
