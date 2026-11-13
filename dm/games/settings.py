@@ -89,7 +89,9 @@ def build(gid, patched, control):
             d = parts[0] if platform == 'ios' else parts[1]
         if d.startswith('DM_GAME_'): return macro(d, n)
         if d.startswith('build:'):
-            v = os.environ.get(d[6:], '')
+            name, _, fallback = d[6:].partition(':')   # build:<VAR>:<fallback>: the value when the build does not set VAR (HookLink's per-device defaults)
+            v = os.environ.get(name, '')
+            if not v and fallback: return fallback
             return {'YES': '1', 'NO': '0', '': '0'}.get(v, v)   # build_ipa.sh's yes / no switches
         return d
 
