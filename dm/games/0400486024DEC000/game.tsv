@@ -96,4 +96,3 @@ render_scale_marks	0.25=Potato
 frame_wg	off
 # The model optimizer's thread only gets idle time on the console (priority 55 under strict priorities); under the QoS map it competed with the frame's threads for the
 # iPhone's two performance cores, 700-770 ms of CPU a second through whole area visits (hle_thread.c thread_main; Hookshot PR 959 found the same on PCs)
-qos_background	OptimizeChangeBan
