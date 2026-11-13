@@ -158,7 +158,7 @@ Fixes and testing: oliverames (game speed below 60 fps, iPhone Duo), Tyuv97G (iP
 
 HookShot by NotRexed: the name, and the idea of frame generation.
 
-OOT SW2SE by Traiver and contributors: the Save editor (MIT).
+OOT SW2SE by Traiver and contributors: the save rules behind the Inventory manager (MIT).
 
 Ivan0xFF, via NX2navi: the Wide view HUD and movie sites (MIT).
 
@@ -216,7 +216,7 @@ private struct LauncherView: View {
         .background(HL.ground.ignoresSafeArea())
         .preferredColorScheme(.dark)
         .sheet(item: $share) { ShareSheet(items: $0.urls) }
-        .fullScreenCover(isPresented: $editing) { SaveEditorView { editing = false } }
+        .fullScreenCover(isPresented: $editing) { InventoryManagerView { editing = false } }
         .confirmationDialog(SaveSyncReport.chooseTitle, isPresented: isAsking(.choose), titleVisibility: .visible, presenting: report) { r in
             Button(r.localLabel(here: "iPhone")) { go(r.localChoice) }
             Button(r.cloudLabel) { go(r.cloudChoice) }
@@ -366,7 +366,7 @@ private struct LauncherView: View {
     // Extras
     private var extrasTab: some View {
         let items: [(String, String, String)] = [("saves", "Export saves", ""), ("import", "Import a save", ""), ("log", "Export game log", ""), ("cloud", "Cloud saves", ""),
-                                                   ("editor", "Save editor", ""),
+                                                   ("editor", "Inventory manager", ""),
                                                    ("cheats", "Cheats", cheatNames().isEmpty ? "No file" : "\(cheatsOn.intersection(cheatNames()).count) on"),
                                                    ("reset", "Reset to tested defaults", m.changed ? "" : "Nothing changed"), ("credits", "Credits", "")]
         return GeometryReader { g in
@@ -395,8 +395,8 @@ private struct LauncherView: View {
             case "cloud":
                 List { CloudSavesSection() }.listStyle(.insetGrouped).scrollContentBackground(.hidden).frame(height: 230)
             case "editor":
-                words("Change rupees, hearts, magic, items, bottles, keys, masks and quest flags in your saves, with OOT SW2SE by Traiver. Your saves are copied to save-backups before each change.")
-                HLRow(title: "Open the save editor", value: "", chosen: true) { editing = true }
+                words("Change rupees, hearts, magic, ammo, bag sizes, small keys, bottles and items in your saves. Your saves are copied to save-backups before every change. The save rules are OOT SW2SE's, by Traiver.")
+                HLRow(title: "Open the inventory manager", value: "", chosen: true) { editing = true }
             case "cheats":
                 let names = cheatNames()
                 if names.isEmpty {
