@@ -86,6 +86,7 @@ typedef struct thr {
     _Atomic int qos_pending;   // SetThreadPriority from another thread changed prio: the thread applies the new class at its next SVC (only a thread can set its own QoS)
     uint32_t qos;
     int frame_thread;          // presents the game's frames (dm_frame_thread_qos): user-interactive whatever its priority
+    int bg_thread;             // a background thread by its name (profile key qos_background, DM_QOS_BG): utility whatever its priority
     // Pausing (SetThreadActivity, used by IL2CPP's garbage collector to stop the world): pause_req = requested, paused = stopped for the current request; when stopped inside an SVC the context comes from the gate frame svc_regs (registered on SVC entry),
     // when stopped in guest code the signal handler saves it into ctx_*; pcv lets the requester wait for "stopped" and the paused thread wait for "resume"
     _Atomic int pause_req; int paused;
@@ -340,7 +341,7 @@ static qos_class_t prio_qos(int prio) {
     return prio <= g_qos_e1 ? QOS_CLASS_USER_INTERACTIVE : prio <= g_qos_e2 ? QOS_CLASS_USER_INITIATED : QOS_CLASS_UTILITY;
 }
 static void qos_apply(thr_t *t) {   // on the thread itself, holding G (prio and qos are shared with scheduler readers)
-    qos_class_t q = t->frame_thread ? QOS_CLASS_USER_INTERACTIVE : prio_qos(t->prio);
+    qos_class_t q = t->frame_thread ? QOS_CLASS_USER_INTERACTIVE : t->bg_thread && g_qos_map ? QOS_CLASS_UTILITY : prio_qos(t->prio);
     if ((uint32_t)q != t->qos && !pthread_set_qos_class_self_np(q, 0)) t->qos = (uint32_t)q;
 }
 // The thread that presents the game's frames runs user-interactive under DM_QOS_MAP whatever its priority. Ocarina of Time presents from a thread the map made user-initiated (QoS 0x19,
@@ -375,7 +376,18 @@ static void *thread_main(void *p) {
     guest_thread_init(); guest_thread_set_id(t->id);
     guest_gate_stack(1);   // the guest runs on its own stack from dm_thread_enter on: this pthread's stack below this frame is where its SVCs run
     pthread_mutex_lock(&G); while (!t->started) pthread_cond_wait(&t->cv, &G); t->entered = 1; pthread_mutex_unlock(&G);
-    { char nb[48], hn[64]; snprintf(hn, sizeof hn, "%#x %s", t->handle, thr_name(t, nb, sizeof nb)); pthread_setname_np(hn); }   // the guest's name (set before StartThread) for sample / Instruments
+    { char nb[48], hn[64]; const char *gn = thr_name(t, nb, sizeof nb); snprintf(hn, sizeof hn, "%#x %s", t->handle, gn); pthread_setname_np(hn);
+      // A background thread by name (profile key qos_background, a comma-separated list of name prefixes; DM_QOS_BG replaces it, "0" for none): utility under DM_QOS_MAP whatever
+      // its priority. Ocarina of Time's OptimizeChangeBank thread (priority 55, user-initiated by the map) walks every placed object of the area again and again; on the console
+      // it only gets idle time (strict priorities), but here it took 700-770 ms of CPU a second for 9 minutes of an iPhone 17 Pro's Kakariko session beside the frame's
+      // threads, on a phone with two performance cores (HookLink 1.8.5 logs). Hookshot found the same on PCs (NotRexed/Hookshot PR 959: Kokiri 17-20 -> 21-28 fps on 6 cores)
+      const char *bg = getenv("DM_QOS_BG"); if (!bg) bg = DM_GAME_QOS_BACKGROUND;
+      if (g_qos_map && *bg && strcmp(bg, "0")) for (const char *q = bg; *q; ) {
+          size_t k = strcspn(q, ",");
+          if (k && !strncmp(gn, q, k)) { pthread_mutex_lock(&G); t->bg_thread = 1; qos_apply(t); pthread_mutex_unlock(&G);
+              LOG("background thread %#x %s (priority %d): QoS utility (qos_background / DM_QOS_BG)", t->handle, gn, t->prio); break; }
+          q += k; if (*q == ',') q++;
+      } }   // the guest's name (set before StartThread) for sample / Instruments
     dm_thread_enter(t->entry, t->arg, t->stack_top);   // Does not return: the guest must exit through ExitThread
     die("guest thread entry returned");
 }
