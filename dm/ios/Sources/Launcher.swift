@@ -390,7 +390,7 @@ private struct LauncherView: View {
                 words("Replaces the game's saves with a save folder you choose (one with account.sav and slot folders, or a folder holding a \"save\" folder). The saves you have now are copied to save-backups first.")
                 HLRow(title: "Choose a save folder", value: "", chosen: true) { picking = true }
             case "log":
-                words("Sends the game's log of the last session, and the one before it. Share it when something looks or runs wrong.")
+                words("Sends the log of your last game session (HookLink-last-game-session.txt), and of this launch. Share both when something looked or ran wrong in the game.")
                 HLRow(title: "Export game log", value: "", chosen: true) { exportLog() }
             case "cloud":
                 List { CloudSavesSection() }.listStyle(.insetGrouped).scrollContentBackground(.hidden).frame(height: 230)
@@ -425,9 +425,17 @@ private struct LauncherView: View {
         guard let n = try? FileManager.default.contentsOfDirectory(atPath: save.path), !n.isEmpty else { note = "There are no saves yet."; return }
         share = ShareItems(urls: [save])
     }
+    // The launcher runs before the game: log.txt is this launch, which has not played yet, and the session played last is log.prev.txt. Bug reports on the Discord
+    // attached log.txt alone, a few lines that stop at the launcher. The two go out as copies whose names say which is which, the played session first
     private func exportLog() {
-        let logs = ["log.txt", "log.prev.txt"].map { docs.appendingPathComponent($0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
-        if logs.isEmpty { note = "There is no log yet. Play once first." } else { share = ShareItems(urls: logs) }
+        let fm = FileManager.default, out = fm.temporaryDirectory.appendingPathComponent("hooklink-logs", isDirectory: true)
+        try? fm.removeItem(at: out); try? fm.createDirectory(at: out, withIntermediateDirectories: true)
+        var urls: [URL] = []
+        for (name, copy) in [("log.prev.txt", "HookLink-last-game-session.txt"), ("log.txt", "HookLink-this-launch.txt")] {
+            let src = docs.appendingPathComponent(name), dst = out.appendingPathComponent(copy)
+            if fm.fileExists(atPath: src.path), (try? fm.copyItem(at: src, to: dst)) != nil { urls.append(dst) }
+        }
+        if urls.isEmpty { note = "There is no log yet. Play once first." } else { share = ShareItems(urls: urls) }
     }
     // The chosen folder becomes Documents/save: it must hold a save (account.sav or a slot folder), and the saves there now go to save-backups first
     private func importSave(_ url: URL) {
