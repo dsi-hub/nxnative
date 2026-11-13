@@ -75,7 +75,7 @@ class LauncherSettingsTests(unittest.TestCase):
     def test_iphone_switches_only_on_the_iphone(self):   # the frame-rate counter and touch feedback are the iOS front end's (front_ios.m, DmGamepad.m)
         ios, mac = build(BOTW, 'nvn'), build(BOTW, 'nvn', 'mac')
         self.assertEqual(build(BOTW, 'nvn', 'ios').keys(), ios.keys())   # ios when unset
-        self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_TOUCH_HAPTICS', 'DM_PICTURE_FIT', 'DM_PAD_THEME', 'DM_PAD_OPACITY', 'DM_WIDE_VIEW', 'DM_WIDE_HUD', 'DM_QOS_MAP', 'DM_QOS_BG', 'DM_THERMAL_CAP'})   # with HookLink's iPhone rows: Wide view's HUD, the QoS map and its background threads, the thermal cap
+        self.assertEqual(set(ios) - set(mac), {'DM_SHOW_FPS', 'DM_SHOW_HEAT_BATTERY', 'DM_TOUCH_HAPTICS', 'DM_PICTURE_FIT', 'DM_PAD_THEME', 'DM_PAD_OPACITY', 'DM_WIDE_VIEW', 'DM_WIDE_HUD', 'DM_QOS_MAP', 'DM_QOS_BG', 'DM_THERMAL_CAP'})   # with HookLink's iPhone rows: Wide view's HUD, the QoS map and its background threads, the thermal cap
         self.assertIn('DM_RUMBLE', mac); self.assertIn('DM_METAL_HUD', mac)
         self.assertEqual(set(mac) - set(ios), {'DM_FULLSCREEN', 'DM_SW2', 'DM_FRAME_WG'})   # the Mac window's Display mode (front_mac.m reads 1 or 0); Switch 2 controllers (pad_switch2_apple.m, wired on the Mac only); Deadline boost (slower on an iPhone: HookLink issue 3)
         s = mac['DM_FULLSCREEN']
