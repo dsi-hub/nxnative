@@ -174,7 +174,8 @@ private struct LauncherView: View {
     @State private var extra: String = "saves"
     @State private var share: ShareItems?
     @State private var picking = false
-    @State private var editing = false   // the Save editor (SaveEditor.swift)
+    @State private var editing = false   // the Inventory manager (InventoryManager.swift)
+    @State private var autoBackupOn = UserDefaults.standard.object(forKey: "hooklink.autobackup") as? Bool ?? true
     @State private var note = ""
     @State private var checking = false
     @State private var check = 0   // which Play the running cloud check is for: one the player went on from without it is dropped
@@ -283,7 +284,7 @@ private struct LauncherView: View {
                     }
                     Text((info("CFBundleDisplayName") as? String) ?? "Game").font(HL.serif(25)).foregroundStyle(.white).multilineTextAlignment(.center).lineLimit(3).minimumScaleFactor(0.7)
                     Text("Version \((info("CFBundleShortVersionString") as? String) ?? "")  •  Ready to play").font(HL.body(13, .medium)).foregroundStyle(HL.dim)
-                    Button(action: { applyCheats(); start() }) {
+                    Button(action: { applyCheats(); autoBackup(); start() }) {
                         Text("Play").font(HL.body(22, .heavy)).foregroundStyle(HL.ground).frame(maxWidth: .infinity).frame(height: 54)
                             .background(LinearGradient(colors: [Color(red: 0.914, green: 0.776, blue: 0.416), Color(red: 0.773, green: 0.604, blue: 0.204)], startPoint: .top, endPoint: .bottom))
                             .clipShape(RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white, lineWidth: 2))
@@ -294,6 +295,8 @@ private struct LauncherView: View {
                         Button("Play without it") { checking = false; go("offline") }.font(HL.body(13, .bold)).foregroundStyle(HL.gold)
                     }
                     if lowDisk { Text("Less than 25 GB free: the game keeps up to about 10 GB of memory on the disk, and it stops when space runs out. Free some space first.").font(HL.body(12, .medium)).foregroundStyle(HL.gold).multilineTextAlignment(.center) }
+                    if ProcessInfo.processInfo.isLowPowerModeEnabled { Text("Low Power Mode is on: iOS slows the phone, and the game will drop frames. Turn it off in Settings \u{2192} Battery for the best frame rate.").font(HL.body(12, .medium)).foregroundStyle(HL.gold).multilineTextAlignment(.center) }
+                    if ProcessInfo.processInfo.thermalState.rawValue >= 2 { Text("The phone is hot: the game will run slower until it cools. A short break helps.").font(HL.body(12, .medium)).foregroundStyle(HL.gold).multilineTextAlignment(.center) }
                 }
                 .padding(.horizontal, 32).padding(.bottom, 12).frame(width: g.size.width * 0.40, height: g.size.height)
                 .background(RadialGradient(colors: [Color(red: 0.231, green: 0.176, blue: 0.098), HL.ground], center: .init(x: 0.5, y: 0.4), startRadius: 10, endRadius: 300))
@@ -386,6 +389,8 @@ private struct LauncherView: View {
             case "saves":
                 words("Sends a copy of your save folder to Files, AirDrop or another app. Your saves stay on the phone.")
                 HLRow(title: "Export saves", value: "", chosen: true) { exportSaves() }
+                words("HookLink can also copy your saves to save-backups each time you press Play, when they changed. The five newest copies are kept.")
+                HLRow(title: "Back up saves at each start", value: autoBackupOn ? "On" : "Off", chosen: autoBackupOn) { autoBackupOn.toggle(); UserDefaults.standard.set(autoBackupOn, forKey: "hooklink.autobackup") }
             case "import":
                 words("Replaces the game's saves with a save folder you choose (one with account.sav and slot folders, or a folder holding a \"save\" folder). The saves you have now are copied to save-backups first.")
                 HLRow(title: "Choose a save folder", value: "", chosen: true) { picking = true }
@@ -488,6 +493,27 @@ private struct LauncherView: View {
     // Play, once the cloud's save is compared with this iPhone's (upstream's save_sync_report, SaveSyncReport): a save that changed on both sides is the player's pick
     private func isAsking(_ step: SaveSyncReport.Step) -> Binding<Bool> {
         Binding(get: { asking == step }, set: { if !$0 && asking == step { asking = nil } })
+    }
+    // A copy of the save folder in save-backups/auto-<time> before the game starts, when a save changed since the newest such copy; the five newest are kept
+    private func autoBackup() {
+        guard autoBackupOn else { return }
+        let fm = FileManager.default, save = docs.appendingPathComponent("save"), dir = docs.appendingPathComponent("save-backups")
+        func newest(_ u: URL) -> Date {
+            var d = Date.distantPast
+            if let e = fm.enumerator(at: u, includingPropertiesForKeys: [.contentModificationDateKey]) { for case let f as URL in e { if let m = try? f.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate, m > d { d = m } } }
+            return d
+        }
+        guard let n = try? fm.contentsOfDirectory(atPath: save.path), !n.isEmpty else { return }
+        let autos = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0.hasPrefix("auto-") }.sorted()
+        if let last = autos.last, newest(dir.appendingPathComponent(last)) >= newest(save) { return }   // nothing saved since
+        let f = DateFormatter(); f.dateFormat = "yyyyMMdd-HHmmss"; f.locale = Locale(identifier: "en_US_POSIX")
+        let name = "auto-" + f.string(from: Date())
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try fm.copyItem(at: save, to: dir.appendingPathComponent(name))
+            for old in (autos + [name]).sorted().dropLast(5) { try? fm.removeItem(at: dir.appendingPathComponent(old)) }
+            fputs("launcher: saves copied to save-backups/\(name)\n", stderr)
+        } catch { fputs("launcher: save backup failed: \(error.localizedDescription)\n", stderr) }
     }
     private func start() {
         check += 1; checking = true; asking = nil
