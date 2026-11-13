@@ -336,7 +336,7 @@ void dm_fps_state_apply(void) {
     // Wide view (Ocarina of Time's patches.py wide_view): DM_WIDE_VIEW=1 with DM_WIDE_ASPECT, the screen's width / height from 1.8 to 2.6 (set by the iOS front end), makes the game's
     // output and render widths follow the screen, multiples of 16: +0x100 u32 the 1440-high width, +0x104 the 1080-high width, +0x108 the former as a float, +0x10c the ratio in 16.16. 0 = 16:9
     { const char *wv = getenv("DM_WIDE_VIEW"), *wa = getenv("DM_WIDE_ASPECT"); char *wend = NULL; float wr = wa ? strtof(wa, &wend) : 0;
-      if (wv && !strcmp(wv, "1") && wa && wend != wa && !*wend && wr >= 1.8f && wr <= 2.6f) {
+      if (wv && !strcmp(wv, "1") && wa && wend != wa && !*wend && ((wr >= 1.8f && wr <= 2.6f) || (wr >= 1.25f && wr <= 1.74f))) {   // (squarer than 16:9 too: an unfolded iPhone Duo, 1.43)
           uint32_t w1 = (uint32_t)(1440.0f * wr / 16.0f + 0.5f) * 16, w2 = (uint32_t)(1080.0f * wr / 16.0f + 0.5f) * 16, q = (uint32_t)(wr * 65536.0f + 0.5f); float wf = (float)w1;
           memcpy(dm_fps_state + 0x100, &w1, 4); memcpy(dm_fps_state + 0x104, &w2, 4); memcpy(dm_fps_state + 0x108, &wf, 4); memcpy(dm_fps_state + 0x10c, &q, 4);
           extern void mtl_present_screen(uint32_t w, uint32_t h); mtl_present_screen(w1, 1440);   // the picture's shape for a texture that follows it (nvn_mtl.m present_shape); without it the view is laid out 16:9
@@ -344,11 +344,11 @@ void dm_fps_state_apply(void) {
           // +0x160 the squeeze of the full-screen UI projection (16:9 over the picture's ratio) and +0x164 the movie's margin on each side, (1 - squeeze) / 2 of the width
           // (patches.py wide_hud, Ivan0xFF's sites): the HUD, menus and movies keep 16:9 in the middle of the picture. DM_WIDE_HUD=0 leaves them over the whole picture
           const char *wh = getenv("DM_WIDE_HUD"); int hud = !(wh && !strcmp(wh, "0"));
-          if (hud) { float sq = (16.0f / 9.0f) / wcam, mg = (1.0f - sq) / 2.0f; memcpy(dm_fps_state + 0x160, &sq, 4); memcpy(dm_fps_state + 0x164, &mg, 4);
+          if (hud && wcam > 16.0f / 9.0f) { float sq = (16.0f / 9.0f) / wcam, mg = (1.0f - sq) / 2.0f;   /* (a squarer picture has no middle 16:9: the HUD and movies take its whole width, a little narrow) */ memcpy(dm_fps_state + 0x160, &sq, 4); memcpy(dm_fps_state + 0x164, &mg, 4);
                      LOG("%s: wide view: HUD, menus and movies in the middle %.1f%% (DM_WIDE_HUD)", g_fps_mod, sq * 100.0f); }
           // The view size the game lays its screen out by (1.8's way to the HUD): with the squeeze above it would no longer be the 3840x2160 grid the HUD site matches, so it
           // stays the game's own unless DM_WIDE_VIEW_SIZE=1 asks for it
-          { const char *vs = getenv("DM_WIDE_VIEW_SIZE"); float vw = vs ? (strcmp(vs, "0") ? (float)w2 : 0) : (hud ? 0 : (float)w2); memcpy(dm_fps_state + 0x118, &vw, 4);   // +0x118: the view size's width, the handheld render width (patches.py wide_sites: the HUD and menus are laid out by it); DM_WIDE_VIEW_SIZE=0: the game's own 1920
+          { const char *vs = getenv("DM_WIDE_VIEW_SIZE"); float vw = vs ? (strcmp(vs, "0") ? (float)w2 : 0) : (hud || wcam < 16.0f / 9.0f ? 0 : (float)w2); memcpy(dm_fps_state + 0x118, &vw, 4);   // +0x118: the view size's width, the handheld render width (patches.py wide_sites: the HUD and menus are laid out by it); DM_WIDE_VIEW_SIZE=0: the game's own 1920
             LOG("%s: wide view: view size width %.0f (DM_WIDE_VIEW_SIZE)", g_fps_mod, vw); }
           LOG("%s: wide view: %.3f:1, output %ux1440, handheld %ux1080, camera ratio %.4f (DM_WIDE_VIEW)", g_fps_mod, wr, w1, w2, wcam); } }
     // Screen shape: DM_SCREEN_ASPECT, the screen's width / height between 1.3 and 1.77, makes the builds with screen-shape stubs

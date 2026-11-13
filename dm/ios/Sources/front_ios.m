@@ -162,12 +162,14 @@ static void launcher_done(void) { [g_root startGame]; }
             setenv("DM_SCREEN_ASPECT", v, 1); LOG("front end: picture shape auto: window %.0fx%.0f points (%.3f:1) → DM_SCREEN_ASPECT=%s", sz.width, sz.height, r, v);
         }
     }
-    {   // Wide view: the app window's own shape, for a window wider than 16:9 (a regular iPhone); an iPad's or an unfolded iPhone Duo's window keeps 16:9. Before the host writes the state page
+    {   // Wide view: the app window's own shape, for a window wider than 16:9 (a regular iPhone) or squarer (an unfolded iPhone Duo, an iPad). Before the host writes the state page
         const char *wv = getenv("DM_WIDE_VIEW");
         if (wv && !strcmp(wv, "1")) {
             CGSize sz = self.view.window ? self.view.window.bounds.size : UIScreen.mainScreen.bounds.size; double r = MAX(sz.width, sz.height) / MAX(MIN(sz.width, sz.height), 1);
-            if (r >= 1.8 && r <= 2.6) { char v[16]; snprintf(v, sizeof v, "%.3f", r); setenv("DM_WIDE_ASPECT", v, 1); LOG("front end: wide view: window %.0fx%.0f points (%.3f:1)", sz.width, sz.height, r); }
-            else LOG("front end: wide view: window %.0fx%.0f points (%.3f:1) is not wider than 16:9, kept 16:9", sz.width, sz.height, r);
+            // (HookLink 1.9: a window squarer than 16:9 too, 1.25 to 1.74: an unfolded iPhone Duo at about 1.43, an iPad. The picture keeps its height and is narrower,
+            // and the cameras take its ratio, so the squarer screen is filled with a taller view instead of bars above and below; untested on a device)
+            if ((r >= 1.8 && r <= 2.6) || (r >= 1.25 && r <= 1.74)) { char v[16]; snprintf(v, sizeof v, "%.3f", r); setenv("DM_WIDE_ASPECT", v, 1); LOG("front end: wide view: window %.0fx%.0f points (%.3f:1)%s", sz.width, sz.height, r, r < 1.77 ? ", squarer than 16:9" : ""); }
+            else LOG("front end: wide view: window %.0fx%.0f points (%.3f:1) is 16:9 or out of range, kept 16:9", sz.width, sz.height, r);
         }
     }
     self.fill = dm_picture_fill(getenv("DM_PICTURE_FIT"));
