@@ -16652,9 +16652,12 @@ static uint64_t g_fg_late;
 static int g_fg_steady, g_fg_starved, g_fg_need = 1; static uint64_t g_fg_paused_late, g_fg_paused_behind, g_fg_last_drop;
 // While frames keep dropping (a drop within FG_AGAIN presents of the one before), the interpolation is not run at all (g_fg_shed, read by snap_take): pausing only what is shown
 // left it costing its GPU time just when the GPU was short (X11 on a hot iPhone, log 8: the game 19-22 ms and the interpolation 10 ms a frame against 33, 55-123 of 300 frames
-// dropped). It runs again after g_fg_resume presents in a row in time, 30 at first and twice as many after each new shed (up to 300), so it does not flap between 60 and 30;
+// dropped). It runs again after g_fg_resume presents in a row in time, 30 at first and twice as many after each new shed (up to DM_FRAMEGEN_RESUME, 30 by default: no doubling), so it does not flap between 60 and 30;
 // a minute in time halves it again. Decided by dropped frames, not by the device's temperature
 static _Atomic int g_fg_shed; static int g_fg_resume = 30; static uint64_t g_fg_sheds, g_fg_shed_frames, g_fg_calm;
+// The longest wait (DM_FRAMEGEN_RESUME, presents, default 30): with the doubling up to 300 (10 s) an iPhone 17 Pro's Hyrule Field, where the game drops a few frames by
+// itself, rarely got the interpolation back, off 73-81 % of the time; capped at 30 it was on again within about a second and off ~41 % (HookLink issue 3, Tyuv97G)
+static int fg_resume_cap(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_FRAMEGEN_RESUME"); v = e && atoi(e) >= 10 ? atoi(e) : 30; if (v > 300) v = 300; } return v; }
 
 // A display link callback whose present took 50 ms or more (three ticks): where the time went, so a silent link (the rescue below) can be traced to its wait.
 // what: the picture shown; snap: the wait for the encode thread to commit its snapshot; present: present_now, alloc of it waiting for a present allocator, res for the residency commit
@@ -16747,11 +16750,11 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
         // as behind paused frame generation for 1,060 of about 2,900 presents of a run that dropped next to no frames (log 80)
         int behind = ticket > first, late = g_fg_starved, drop = behind || late; g_fg_starved = 0;
         if (drop) { int again = g_fg_last_drop && ticket - g_fg_last_drop <= FG_AGAIN; g_fg_need = again ? FG_STEADY : 1; g_fg_last_drop = ticket;
-            if (again && fg_on() && !atomic_load(&g_fg_shed)) { atomic_store(&g_fg_shed, 1); if (g_fg_sheds++) g_fg_resume = MIN(g_fg_resume * 2, 300); g_fg_calm = 0;
+            if (again && fg_on() && !atomic_load(&g_fg_shed)) { atomic_store(&g_fg_shed, 1); if (g_fg_sheds++) g_fg_resume = MIN(g_fg_resume * 2, fg_resume_cap()); g_fg_calm = 0;
                 MLOG("frame generation: frames keep dropping, the interpolation stops until %d presents in a row come in time (#%llu)", g_fg_resume, (unsigned long long)g_fg_sheds); } }
         g_fg_steady = drop ? 0 : g_fg_steady + 1;
         if (atomic_load(&g_fg_shed) && g_fg_steady >= g_fg_resume) { atomic_store(&g_fg_shed, 0); MLOG("frame generation: %d presents in time, the interpolation runs again", g_fg_steady); }
-        if (!drop && ++g_fg_calm >= 1800 && g_fg_resume > 30) { g_fg_resume /= 2; g_fg_calm = 0; }
+        if (!drop && ++g_fg_calm >= 1800 && g_fg_resume > 30) { g_fg_resume = MAX(30, g_fg_resume / 2); g_fg_calm = 0; }
         if (it.gen && g_fg_steady < g_fg_need) { it.gen = 0; if (behind) g_fg_paused_behind++; else g_fg_paused_late++; }
     }
     g_pq_read = ticket;
