@@ -14132,6 +14132,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di);
 // turns it off; the log names the HUD's targets and the shaders drawing into window textures, and counts each case every 600 generated frames (fg_ui_count). Run on Ocarina of
 // Time only (HookLink)
 static id<MTLResidencySet> g_snap_res;   // the present snapshots' residency set (snap_take), which the host's copies without the HUD join
+static _Atomic int g_fg_shed;   // frame generation's interpolation stopped while frames keep dropping (present_link_note): the HUD layer takes no copies then either
 static int fg_on(void);
 static int g_fgui_mode = -1;
 // 1 (the default): MetalFX interpolates the scenes alone and fgmv_ui puts the present's HUD back where its picture and its scene differ (fg_ui_comp); 2: MetalFX takes the HUD
@@ -14159,7 +14160,7 @@ static struct { uint64_t ser; id<MTLTexture> pre, pre_old; NSUInteger w, h, fmt;
 // while the draw that brings it into a window texture runs once with the scene alone (fg_ui_final). pend: 1 a copy taken this frame (reset at each present)
 #define FGUH_MAX 4
 static struct { uint64_t ser; id<MTLTexture> pre, tmp; NSUInteger w, h, fmt; int pend, reach; uint64_t swaps, last; } g_fguh[FGUH_MAX];   // reach: seen sampled into a window texture; last: g_fgui_draws_n at its last HUD draw (slot reuse)
-static uint64_t g_fgui_clears, g_fgui_ui_draws, g_fgui_off_win, g_fgui_small, g_fgui_skip_clear, g_fgui_skip_pass, g_fgui_no_tex, g_fgui_nofinal, g_fgui_swaps;   // fg_ui_log's counts
+static uint64_t g_fgui_shed, g_fgui_clears, g_fgui_ui_draws, g_fgui_off_win, g_fgui_small, g_fgui_skip_clear, g_fgui_skip_pass, g_fgui_no_tex, g_fgui_nofinal, g_fgui_swaps;   // fg_ui_log's counts
 static struct { uint64_t ser; uint32_t w, h, fmt; int win; uint64_t draws; } g_fgui_tgt[8]; static int g_fgui_ntgt;   // the targets HUD draws wrote (the first 8)
 static char g_fgui_wfs[4][17]; static int g_fgui_nwfs;   // the fragment shaders drawing into a window texture (the first 4)
 static int g_fgui_in;   // fg_ui_final's own draw: no hook
@@ -14217,6 +14218,9 @@ static void fg_ui_final(const tex_t *w, const p_draw *dw, const p_draw_idx *di) 
 }
 static void fg_ui_draw(NvShader *fs, const p_draw *dw, const p_draw_idx *di) {
     if (!fg_ui_on() || g_fgui_in || !g_snap_res) return;
+    // While the interpolation is stopped (frames keep dropping) nothing would use the copies: none are taken, so the GPU is not given more work just when it is short
+    // (an iPhone Duo run of 2026-11-14 stopped it ten times, up to 300 presents each, in heavy scenes and when hot)
+    if (atomic_load_explicit(&g_fg_shed, memory_order_relaxed)) { g_fgui_shed++; return; }
     const tex_t *t = R.rt.n > 0 ? R.rt.color[0] : NULL;
     if (!t) return;
     int win = xv_present(t->serial);
@@ -16768,7 +16772,7 @@ static int g_fg_steady, g_fg_starved, g_fg_need = 1; static uint64_t g_fg_paused
 // left it costing its GPU time just when the GPU was short (X11 on a hot iPhone, log 8: the game 19-22 ms and the interpolation 10 ms a frame against 33, 55-123 of 300 frames
 // dropped). It runs again after g_fg_resume presents in a row in time, 30 at first and twice as many after each new shed (up to 300), so it does not flap between 60 and 30;
 // a minute in time halves it again. Decided by dropped frames, not by the device's temperature
-static _Atomic int g_fg_shed; static int g_fg_resume = 30; static uint64_t g_fg_sheds, g_fg_shed_frames, g_fg_calm;
+static int g_fg_resume = 30; static uint64_t g_fg_sheds, g_fg_shed_frames, g_fg_calm;   // g_fg_shed: with frame generation's HUD layer, above
 
 // A display link callback whose present took 50 ms or more (three ticks): where the time went, so a silent link (the rescue below) can be traced to its wait.
 // what: the picture shown; snap: the wait for the encode thread to commit its snapshot; present: present_now, alloc of it waiting for a present allocator, res for the residency commit
@@ -17449,9 +17453,9 @@ static void fg_ui_count(int ui, int has, int prev_has) {
     n++; if (ui) used++; else if (!has) none++; else if (!prev_has) prev_none++;
     if (n == 1 || n % 600) return;
     MLOG("frame generation: HUD layer in %llu of the last 600 generated frames (without: %llu no copy of this present, %llu none of the one before); HUD draws %llu (%llu into other textures, %llu of them small), "
-         "window pictures drawn without the HUD %llu, frames whose HUD texture reached no window texture %llu; HUD over a clear %llu; copies not taken: %llu at a clear, %llu in a deferred, merged or multi-draw pass, %llu with no texture yet",
+         "draws while the interpolation was stopped %llu, window pictures drawn without the HUD %llu, frames whose HUD texture reached no window texture %llu; HUD over a clear %llu; copies not taken: %llu at a clear, %llu in a deferred, merged or multi-draw pass, %llu with no texture yet",
          (unsigned long long)used, (unsigned long long)none, (unsigned long long)prev_none, (unsigned long long)g_fgui_ui_draws, (unsigned long long)g_fgui_off_win, (unsigned long long)g_fgui_small,
-         (unsigned long long)g_fgui_swaps, (unsigned long long)g_fgui_nofinal, (unsigned long long)g_fgui_clears, (unsigned long long)g_fgui_skip_clear, (unsigned long long)g_fgui_skip_pass, (unsigned long long)g_fgui_no_tex);
+         (unsigned long long)g_fgui_shed, (unsigned long long)g_fgui_swaps, (unsigned long long)g_fgui_nofinal, (unsigned long long)g_fgui_clears, (unsigned long long)g_fgui_skip_clear, (unsigned long long)g_fgui_skip_pass, (unsigned long long)g_fgui_no_tex);
     used = none = prev_none = 0;
 }
 static void snap_commit_wait(uint64_t v) { if (v) rec_note_wait(&g_snap_cmt, v); }
