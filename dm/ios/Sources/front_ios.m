@@ -321,8 +321,14 @@ static _Atomic double g_brightness = -1;
 int dm_thermal_now(void) { return (int)NSProcessInfo.processInfo.thermalState; }
 int dm_low_power_now(void) { return NSProcessInfo.processInfo.lowPowerModeEnabled; }   // the frame step does not probe in it (hle_nvn.c fstep_cpu_slowed)
 double dm_brightness_now(void) { return g_brightness; }
+// The screen's top rate (120 on a ProMotion iPhone, which needs CADisableMinimumFrameDurationOnPhone, set in project.yml), read on the main thread at start.
+// nvn_mtl.m's weak default returned 0 on iOS, so 60 fps + frame generation stayed on the 60 Hz display link: the generated frame had no tick of its own and took
+// the real frame's, frames dropped and the interpolation kept stopping (HookLink test33 log, frame rate mode 3). Low Power Mode caps the screen at 60 Hz, so it reads 60 there
+static _Atomic int g_screen_max_fps;
+int front_screen_max_fps(void) { int hz = g_screen_max_fps; return hz > 60 && dm_low_power_now() ? 60 : hz; }
 static void front_ios_power_watch(void) {
     g_brightness = UIScreen.mainScreen.brightness;
+    g_screen_max_fps = (int)UIScreen.mainScreen.maximumFramesPerSecond; LOG("front end: the screen shows up to %d fps", (int)g_screen_max_fps);
     [NSNotificationCenter.defaultCenter addObserverForName:UIScreenBrightnessDidChangeNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { (void)n; g_brightness = UIScreen.mainScreen.brightness; }];
     [NSNotificationCenter.defaultCenter addObserverForName:NSProcessInfoThermalStateDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *n) {
         (void)n; LOG("front end: thermal state → %d (%.0f s after launch)", dm_thermal_now(), (now_ns() - g_t0_ns) / 1e9); }];
