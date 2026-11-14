@@ -16758,6 +16758,7 @@ static uint64_t g_fg_late;
 // within FG_AGAIN presents of the one before, frames dropping on and on, takes the FG_STEADY presents, so guessed pictures do not mix into a rhythm of held ones (the flicker)
 #define FG_STEADY 3
 #define FG_AGAIN 30
+static double g_fg_taken_at;   // display-link thread: the target time of the tick that last took a frame from the queue
 static int g_fg_steady, g_fg_starved, g_fg_need = 1; static uint64_t g_fg_paused_late, g_fg_paused_behind, g_fg_last_drop;
 // While frames keep dropping (a drop within FG_AGAIN presents of the one before), the interpolation is not run at all (g_fg_shed, read by snap_take): pausing only what is shown
 // left it costing its GPU time just when the GPU was short (X11 on a hot iPhone, log 8: the game 19-22 ms and the interpolation 10 ms a frame against 33, 55-123 of 300 frames
@@ -16842,7 +16843,11 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
         g_fg_late++;
     }
     if (!g_dm_present_link || g_rescue_mode || g_pq_read == g_pq_in) {
-        if (g_dm_present_link && !g_rescue_mode) { g_link_empty++; if (!(g_link_hold_until > 0 && update.targetPresentationTimestamp < g_link_hold_until - tol)) g_fg_starved = 1; }   // (FG_STEADY)
+        // An empty tick is a late frame only once the game's own frame period has passed since the last frame taken: on the 120 Hz link at 60 fps (60 fps + frame generation
+        // on a ProMotion iPhone) the tick between two frames is empty whenever no generated frame fills it, and while the interpolation was paused every such tick read as
+        // late, so 30 presents in a row never came in time and it never ran again (HookLink test34 log: one stop, no resume in 20 minutes)
+        if (g_dm_present_link && !g_rescue_mode) { g_link_empty++; int fps = mtl_fps_target(); double due = g_fg_taken_at + (fps > 0 ? 1.0 / fps : 0);
+            if (!(g_link_hold_until > 0 && update.targetPresentationTimestamp < g_link_hold_until - tol) && !(g_fg_taken_at > 0 && update.targetPresentationTimestamp < due - tol)) g_fg_starved = 1; }   // (FG_STEADY)
         pthread_mutex_unlock(&g_pq_mu); return; }
     // The previous frame's present interval was >= 2 (period > 25 ms): keep it on screen for its whole period before taking the next one, as the Switch flips only every N vertical syncs. This also holds while the link runs at 60 Hz (Mario 1.2.1 sets 2 for single frames, see nvn_game_fps in hle_nvn.c);
     //   before, every tick took the newest frame, so that frame, carrying the extra time step the game advanced for it, was shown for only 16.7 ms and the game looked like it jumped ahead
@@ -16854,6 +16859,7 @@ __attribute__((weak)) uint64_t dm_focus_in_since(void) { return 0; }
     static int fifo = -1; if (fifo < 0) { const char *e = getenv("DM_PRESENT_FIFO"); fifo = !(e && !strcmp(e, "0")); MLOG("display link: %s", fifo ? "frames in order, at most one behind" : "the newest frame each tick (DM_PRESENT_FIFO=0)"); }
     if (fifo && ticket > first) ticket = ticket - first >= 2 ? g_pq_in - 1 : first;
     pq_item it = g_pq[(ticket - 1) % PQ]; g_link_it_tin = it.t_in;
+    g_fg_taken_at = update.targetPresentationTimestamp;   // the tick this frame is shown from (its generated frame first, when it has one)
     {   // frame generation pauses while frames drop (FG_STEADY): this present came late, or a newer one waits
         // Behind: older presents were dropped for this one. One newer present waiting is not: with snapshots the game runs a frame ahead of the screen, and taking that
         // as behind paused frame generation for 1,060 of about 2,900 presents of a run that dropped next to no frames (log 80)
