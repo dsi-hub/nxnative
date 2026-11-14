@@ -17475,7 +17475,10 @@ static uint64_t snap_take(const tex_t *t, double period, const int crop[4], int 
         int pk = (int)((atomic_load(&g_snap_next) + (uint64_t)g_snap_n - 1) % (uint64_t)g_snap_n);
         g_snap[k].seq = g_fg_seq;
         if (fg_mv_on()) fg_luma(cb, k);
-        if (period > 0.025 && !atomic_load(&g_fg_shed)) fg_encode(cb, k, pk, period); else { g_fg_warm = 0; if (period > 0.025) g_fg_shed_frames++; }
+        // Held two link ticks or more: 25 ms on the 60 Hz link (30 fps + frame generation); on the 120 Hz link (60 fps + frame generation) a 60 fps frame is two ticks of
+        // 8.3 ms, and the fixed 25 ms never let the interpolation run there (HookLink test35 log: no generated frame in a whole session at 60 fps + frame generation)
+        double tk = g_fg_tick; int two = tk > 0.004 ? period >= 1.5 * tk : period > 0.025;
+        if (two && !atomic_load(&g_fg_shed)) fg_encode(cb, k, pk, period); else { g_fg_warm = 0; if (two) g_fg_shed_frames++; }
     }
     [cb endCommandBuffer];
     MTL4CommitOptions *o = nil;
