@@ -42,10 +42,11 @@ int main(void) { @autoreleasepool {
     id<MTLBuffer> b = [g_dev newBufferWithBytesNoCopy:m length:n options:MTLResourceStorageModeShared deallocator:nil];
     res_add(b);
     wired(m, n, &lo, &hi);
-    CHECK("the file pages are user-wired once res_add returns, before the commit", lo == 1 && hi == 1);
-    CHECK("and resident: the commit has nothing to page in", all_resident(m, n));
+    CHECK("res_add only queues the change: nothing is wired before the commit takes it", lo == 0 && hi == 0);
     CHECK("the buffer is in the set", in_set(b));
-    res_commit();
+    uint64_t w0 = g_fwire_n; res_commit();
+    CHECK("the commit wired the buffer's file pages once, before its own commit (file_wire in res_commit)", g_fwire_n == w0 + 1);
+    CHECK("and they are resident", all_resident(m, n));
     wired(m, n, &lo, &hi);
     CHECK("the commit gives the user wiring back", lo == 0 && hi == 0);
     CHECK("the bytes are the file's", m[0] == 0x5a && m[n - 1] == 0);
@@ -61,9 +62,8 @@ int main(void) { @autoreleasepool {
     // Added twice before one commit: wired once, given back once
     id<MTLBuffer> b3 = [g_dev newBufferWithBytesNoCopy:m + 128 * pg length:64 * pg options:MTLResourceStorageModeShared deallocator:nil];
     res_add(b3); res_add(b3);
-    wired(m + 128 * pg, 64 * pg, &lo, &hi);
-    CHECK("a second res_add of a buffer in the set wires nothing more", lo == 1 && hi == 1);
-    res_commit();
+    uint64_t w1 = g_fwire_n; res_commit();
+    CHECK("a second res_add of a buffer in the set wires nothing more", g_fwire_n == w1 + 1);
     wired(m + 128 * pg, 64 * pg, &lo, &hi);
     CHECK("and the commit leaves nothing wired", lo == 0 && hi == 0);
 

@@ -13,7 +13,7 @@ No game files, keys or anything built from a dump are here. The pipeline rows in
 - **Frame pacing on iOS:** the thread that presents the game's frames runs user-interactive whatever its priority. Under `DM_QOS_MAP` it was user-initiated, and iOS kept it on the efficiency cores (1.6 GHz instead of 3.7), so Hyrule Field fell to 41-55 fps with the GPU half idle (`DM_FRAME_QOS=0` turns it off).
 - **Touch controls:** a Glass colour theme on every layout, and a Mobile layout (floating stick, camera on the right half, glass keys, a D-pad), inspired by cheemu21's kid-with-sword, from the kid-with-sword fork.
 - **Wide view (experimental):** a launcher setting that makes the output and render sizes follow a screen wider than 16:9 at each start (`DM_WIDE_VIEW`), from nxnative PR #1460's sites. In handheld mode the game's cameras keep 16:9, so the game cameras' own aspect is scaled by the picture's ratio over 16:9 where they set it (main+0x4c533c, +0x2e1bb6c, +0x2e1c7d0), and other 16:9 aspects take the picture's ratio. The HUD and menus are still stretched, and the wider view costs GPU time.
-- **Submission:** up to 32 command allocators in flight (`DM_NVN_ALLOC_CAP`); side-by-side compute dispatches (`DM_NVN_DISPATCH_OVERLAP`) and lossy render targets (`DM_NVN_RT_LOSSY`) are off by default.
+- **Submission:** lossy render targets (`DM_NVN_RT_LOSSY`) are off by default. Since 1.9 the command allocators and compute dispatches are nxnative's own (the 32-allocator cap and side-by-side dispatches went with the merge of nxnative's main).
 - **Frame rate mode (`DM_FRAME_MODE`):** one launcher choice for 60 fps, 30 fps steady, 30 fps + frame generation (default) and 60 fps + frame generation on a 120 Hz screen; frame generation (MetalFX frame interpolation) and the steady 30 come from cheemu21's kid-with-sword-remake (V17, X2-X9), merged onto nxnative's present path. MetalFX is the default upscaler.
 - **Memory cutoff:** with no map limit, MapPhysicalMemory is refused past `DM_MEM_CUTOFF_MB` (10240) or, on iOS, with less than `DM_MEM_ROOM_MIN_MB` (768) left to the limit, so the SDK frees its cached pages instead of iOS closing the game.
 - **Present deadline (`DM_RT_PRESENT`):** the thread that presents declares its own frame deadline when another thread acquires, so iOS does not keep it on the efficiency cores.
@@ -25,6 +25,8 @@ No game files, keys or anything built from a dump are here. The pipeline rows in
 - **Frame generation X10-X12** from cheemu21 (its own motion, the HUD kept, backing off while frames drop, Frame generation size), and Deadline boost (`DM_FRAME_WG`, off by default).
 - **Save editor:** OOT SW2SE by Traiver and contributors (MIT) in the launcher's Extras, writing into the game's saves after a backup.
 - **iOS:** `Documents/res_overlay` is read as a game file overlay (HookLink's resolution file). Ocarina gets a pipeline archive for `g19p`.
+
+- **HookLink 1.9 (private):** merged with nxnative's main of 2026-11-13, which brings its texture view cache (PR #2542) among others. The residency commit's file wiring (seedds' fix for the frozen commit, `file_wire`) and the retirement of unreferenced shared textures under memory pressure (PR #1455, now in `nvn_owner.m`) are carried onto nxnative's new residency queue and resource owner. Model optimizer in the background (`DM_QOS_BG`) is off by default; 60 fps + frame generation gets the 120 Hz display link on a ProMotion iPhone and interpolates its frames; the replay and encode threads declare the frame deadline (nxnative PR #2569).
 
 ## Credits
 

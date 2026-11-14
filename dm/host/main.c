@@ -169,7 +169,7 @@ void dm_host_preload_start(int argc, char **argv) {
 }
 int main(int argc, char **argv) {
     dm_frame_mode_apply();   // the launcher's Frame rate mode into its switches (frame_mode.h): the Mac app's launcher starts this process with the choice in the environment
-    { int mtl_pso_prebuild_tool(void); if (mtl_pso_prebuild_tool()) return 0; }   // DM_PSO_PREBUILD=tool: the pipeline archive's prebuild alone, no game (nvn_mtl.m)
+    { int mtl_pso_prebuild_tool(void); int r = mtl_pso_prebuild_tool(); if (r) return r == 2; }   // DM_PSO_PREBUILD=tool: what a first start would build, made with no game (nvn_mtl.m)
     if (getenv("DM_PRELOAD")) dm_host_preload_start(argc, argv);   // Exercise the early-start path on Mac (on iOS it is called from the App's main())
     if (atomic_load(&g_pre.started)) {
         pthread_join(g_pre.th, NULL);
