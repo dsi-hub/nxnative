@@ -163,6 +163,8 @@ def header_one(g):
     vers = ', '.join('{' + q(b['main']) + ', ' + q(b['display']) + '}' for b in g.builds().values() if 'main' in b)
     pi = g.get('present_interval', 'game')   # present interval: game = as the game sets it (as on the Switch), display = one frame per display tick
     if pi not in ('game', 'display'): sys.exit(f'{g.id}: present_interval must be game or display: {pi}')
+    pot = g.get('potato', '')   # the launcher's Potato mode (DM_PRESET=potato; loader.c dm_preset_apply): <VAR>=<value>,... set when the game starts; none = no Potato row (kid-with-sword-remake V18, HookLink VX1)
+    if pot and not all(re.fullmatch(r'DM_[A-Z0-9_]+=[^,\s"]+', kv) for kv in pot.split(',')): sys.exit(f'{g.id}: potato is <VAR>=<value>,...: {pot}')
     ft = g.get('fps_target', '0')   # frame rate cap of the rewriter's frame step (FRAME_STEP in the profile's patches.py: Tears of the Kingdom 1.4.3, Breath of the Wild 1.9.0) or of the engine's own frame limit (hle_fpslock.c): 0 = the game's own step, 30 / 60
     if ft not in ('0', '30', '60'): sys.exit(f'{g.id}: fps_target must be 0, 30 or 60: {ft}')
     fm = g.get('fps_max', '60')   # the highest rate fps_target and the player's Frame rate may take: 120 only for a game checked at that speed (hle_nvn.c fps_high)
@@ -255,6 +257,8 @@ def header_one(g):
          f'#define DM_GAME_CORE_PREEMPT {int(cp == "on")}',
          f'#define DM_GAME_ALLOC_BIG_ALIGN {int(aba == "on")}',
          f'#define DM_GAME_FPS_TARGET {int(ft)}',
+         f'#define DM_GAME_POTATO "{pot}"',   # the Potato mode's settings (loader.c dm_preset_apply)
+         f'#define DM_GAME_POTATO_N {len(pot.split(",")) if pot else 0}',   # how many: the launcher's Potato mode row shows when there are any
          f'#define DM_GAME_FPS_MAX {int(fm)}',
          f'#define DM_GAME_FPS_HOLD {int(fh == "on")}',
          f'#define DM_GAME_FPS_PAYBACK {int(fpb == "on")}',

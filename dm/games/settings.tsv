@@ -21,6 +21,7 @@ DM_DYNAMIC_RESOLUTION	toggle	-	build:DM_DYNRES_DEFAULT:0	fixups:DYNAMIC_RESOLUTI
 DM_RENDER_SCALE	range	0.5:1.0:0.05	1.0	fixups:RENDER_SCALE	Game	Render scale		level=basic
 DM_COOL	toggle	-	0	gfxapi:nvn	Game	Cool mode	Less heat, so the phone keeps its speed longer: the 3D picture at 50 % whatever Render scale says, and frame generation's in-between frames at half size. A softer picture.
 DM_NDVE_LITE	toggle	-	1	gfxapi:nvn	Game	Light movies	The title and opening movies skip the game's movie sharpening, which takes about 15 ms of GPU a frame and kept the title screen under 60 fps. A slightly softer movie. Off: the movies as the game makes them.
+DM_PRESET	toggle	potato/standard	0	DM_GAME_POTATO_N!=0	Game	Potato mode	The lightest the game can run, for older or smaller iPhones and long sessions: the 3D picture at 25 %, frame generation's in-between frames at half size, and memory savers (pipelines warmed into the system's cache instead of kept, shared textures let go sooner). The rows it sets are locked while it's on.
 DM_OPMODE	choice	1=Docked,0=Handheld	DM_GAME_OPMODE	always	Game	Console mode		level=basic
 DM_PRESENT_UPSCALE	choice	off=Standard,metalfx=MetalFX	off	always	Game	Upscaling	Uses more GPU time and can increase heat.
 DM_UPSCALER	choice	game=Game's own,metalfx=MetalFX	metalfx	DM_GAME_UPSCALER_N!=0	Game	Game's upscaler	MetalFX is the default in HookLink: Apple's scaler takes far less GPU time than the game's own network on an iPhone (HookLink issue 3: an iPhone 17 Pro ran 30 fps + frame generation at 14-20 ms of GPU with it)

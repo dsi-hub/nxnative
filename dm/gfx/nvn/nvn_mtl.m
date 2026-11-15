@@ -601,8 +601,12 @@ static void alias_retire_idle(void) {
     if (off) return;
     pthread_mutex_lock(&g_res_commit_mu); uint64_t held = g_res ? g_res.allocatedSize : 0; pthread_mutex_unlock(&g_res_commit_mu);
     uint64_t ws = ws_bytes();
-    if (held <= ws / 100 * ALIAS_HI) return;
-    uint64_t freed = 0; pthread_mutex_lock(&g_smu); uint32_t take = own_alias_retire_idle_locked(held, ws / 100 * ALIAS_LO, ALIAS_RETIRE, &freed); pthread_mutex_unlock(&g_smu);
+    // DM_NVN_ALIAS_HI / DM_NVN_ALIAS_LO (percent of the working set; Potato mode sets 60 / 50): a phone with less memory lets the idle shared textures go sooner
+    static int hi = -1, lo = -1;
+    if (hi < 0) { const char *h = getenv("DM_NVN_ALIAS_HI"), *l = getenv("DM_NVN_ALIAS_LO"); hi = h && atoi(h) > 0 && atoi(h) <= 100 ? atoi(h) : ALIAS_HI; lo = l && atoi(l) > 0 && atoi(l) < hi ? atoi(l) : MIN((int)ALIAS_LO, hi - 10 > 0 ? hi - 10 : 1);
+                  if (hi != ALIAS_HI || lo != ALIAS_LO) MLOG("shared textures: idle ones retired from %d %% of the working set down to %d %% (DM_NVN_ALIAS_HI / LO)", hi, lo); }
+    if (held <= ws / 100 * (uint64_t)hi) return;
+    uint64_t freed = 0; pthread_mutex_lock(&g_smu); uint32_t take = own_alias_retire_idle_locked(held, ws / 100 * (uint64_t)lo, ALIAS_RETIRE, &freed); pthread_mutex_unlock(&g_smu);
     if (take) { static int lines; if (lines++ < 8) MLOG("shared textures: %u retired (%llu MB), no live object resolved to them in %d submissions (residency set %llu MB of a %llu MB working set)", take,
                  (unsigned long long)(freed >> 20), ALIAS_RETIRE, (unsigned long long)(held >> 20), (unsigned long long)(ws >> 20)); }
 }
@@ -10681,6 +10685,10 @@ static int warm_stale(NSString *key, NSMutableSet<NSString *> *stale) {
     if (![stale containsObject:key]) { [stale addObject:key]; g_warm_skip_stale++; }
     return 1;
 }
+// DM_PSO_WARM_ONLY=1 (kid-with-sword-remake A12, HookLink VX1: Potato mode): the prewarm builds each pipeline and lets it go instead of handing it to the submit thread, as the prebuild
+// tool does (g_pre_tool). What it leaves is the system's Metal shader cache on disk: a pipeline the game asks for later is made from it in well under a millisecond (Ocarina of Time on
+// an A20 Pro: 792 in 0.33 s). Nothing stays in memory: a kept prewarm held about 1.2 GB on an iPhone (kid-with-sword's log 38), which a phone with less memory can't spare
+static int warm_only(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_PSO_WARM_ONLY"); v = e && atoi(e) > 0; if (v) MLOG("DM_PSO_WARM_ONLY: the prewarm fills the system's shader cache and keeps no pipeline"); } return v; }
 static NvShader *warm_shader(NSString *key, int stage) {
     os_unfair_lock_lock(&g_warm_dict_lock);
     id sh = g_warm_dict[key];
@@ -10698,7 +10706,7 @@ static NvShader *warm_shader(NSString *key, int stage) {
     NvShader *n = shader_load(key, stage, 0);
     if (n && n->stage == 0 && n->has_pull && !n->layer_out && hybrid_on()) pull_load(n);   // fully prepare before publishing
     os_unfair_lock_lock(&g_warm_dict_lock);
-    g_warm_dict[key] = n ?: (id)NSNull.null;
+    if (!warm_only() || !n) g_warm_dict[key] = n ?: (id)NSNull.null;   // warm-only: a shader lives as long as the tasks using it, not until the whole list is done
     load->shader = n;
     [g_warm_loads removeObjectForKey:key];
     dispatch_group_leave(load->done);
@@ -10763,13 +10771,13 @@ static void warm_task(WarmTask *t) {
     @autoreleasepool {
         if (t->kind == 0) {
             NvShader *sh = warm_shader(t->key, t->stage);
-            if (sh) { WarmItem *item = [WarmItem new]; item->kind = 0; item->key = t->key; item->shader = sh; warm_enqueue(item); g_warm_shaders++; }
+            if (sh) { if (!warm_only()) { WarmItem *item = [WarmItem new]; item->kind = 0; item->key = t->key; item->shader = sh; warm_enqueue(item); } g_warm_shaders++; }
             g_warm_done++; return;
         }
         if (t->kind == 2) {
             NvShader *cs = warm_shader(t->key, 5); NSError *e = nil; id ps = cs ? cps_new_b(cs->fn, 1, &e) : nil;   // the common pipeline (g_cps)
             if (cs && !ps) MLOG("[RED] background compute pipeline creation failed: %s", e.localizedDescription.UTF8String);
-            if (ps && g_pre_tool) g_warm_cps++;   // the prebuild tool: captured for the archive, nothing kept
+            if (ps && (g_pre_tool || warm_only())) g_warm_cps++;   // the prebuild tool (captured for the archive) or warm-only: nothing kept
             else if (ps) { WarmItem *item = [WarmItem new]; item->kind = 2; item->key = t->key; item->shader = cs; item->object = ps; warm_enqueue(item); g_warm_cps++; }
             g_warm_done++; return;
         }
@@ -10782,7 +10790,7 @@ static void warm_task(WarmTask *t) {
                 (t->tkey ? (ts && ts->stage == 3 && ts->mesh_kind == 1 && ts->fn && !vs->mesh_notask) : vs->mesh_notask)) {
                 NSError *error = nil;
                 id<MTLRenderPipelineState> ps = mtk_build(&sk.k, ts, vs, fs, &error, NULL);
-                if (ps && g_pre_tool) g_warm_mps++;   // the prebuild tool: captured for the archive, nothing kept
+                if (ps && (g_pre_tool || warm_only())) g_warm_mps++;   // the prebuild tool (captured for the archive) or warm-only: nothing kept
                 else if (ps) {
                     WarmItem *item = [WarmItem new]; item->kind = 3; item->pso = sk.k; item->object = ps;
                     item->vs = vs; item->vs_key = t->vkey; item->fs = fs; item->fs_key = t->fkey; item->ts = ts; item->ts_key = t->tkey;
@@ -10805,7 +10813,7 @@ static void warm_task(WarmTask *t) {
             NSError *e = nil; id ps = pso_build(pso_desc(&k, vs, fs, fsfn, sk.merged), !k.border, &e);
             g_warm_done++;
             if (!ps) { g_pre_warm_failed++; MLOG("[RED] background render pipeline creation failed: %s", e.localizedDescription.UTF8String); continue; }
-            if (g_pre_tool) { g_warm_rps++; continue; }   // the prebuild tool: the base is in the serializer; keep nothing
+            if (g_pre_tool || warm_only()) { g_warm_rps++; continue; }   // the prebuild tool (the base is in the serializer) or warm-only: keep nothing
             WarmItem *item = [WarmItem new]; item->kind = 1; item->vs_key = t->vkey; item->fs_key = t->fkey; item->vs = vs; item->fs = fs; item->fsfn = fsfn; item->pso = k; item->object = ps;
             warm_enqueue(item); g_warm_rps++;
         }

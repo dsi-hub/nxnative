@@ -92,3 +92,9 @@ frame_wg	off
 # iPhone's two performance cores, 700-770 ms of CPU a second through whole area visits (hle_thread.c thread_main; Hookshot PR 959 found the same on PCs)
 # Pool tables give a finalized texture's ID the dummy instead of making its texture again: about 2.5 GB at the house-to-forest change (upstream PR #1393, open; from the kid-with-sword-remake fork's FF line, HookLink 1.9 test42)
 pool_skip_retired	on
+# The launcher's Potato mode (DM_PRESET=potato; loader.c dm_preset_apply sets this list when the game starts, over the launcher's own values; kid-with-sword-remake V18's mechanism,
+# HookLink VX1's list): the 3D views at 0.25 (the Render scale's Potato mark, 480x270 handheld), frame generation's frames at half the size shown, the prewarm warm-only (no pipeline kept:
+# a kept prewarm held about 1.2 GB on an iPhone), and the idle shared textures let go from 60 % of Metal's working set down to 50 % (85 / 75 by default). kid-with-sword's other memory
+# savers (the GPU memory guard, the texture recycle bin, lazy textures, big pools in the guest files) were written on an engine whose memory code nxnative has since rewritten: main's
+# own render-target release, pool chunks, stand-ins and HookLink's idle retirement and pool_skip_retired stand for them here
+potato	DM_RENDER_SCALE=0.25,DM_FRAMEGEN_SCALE=0.5,DM_PSO_WARM_ONLY=1,DM_NVN_ALIAS_HI=60,DM_NVN_ALIAS_LO=50

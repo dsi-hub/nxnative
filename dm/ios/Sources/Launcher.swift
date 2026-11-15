@@ -332,9 +332,9 @@ private struct LauncherView: View {
                     panel(s.label) {
                         ScrollView {
                             VStack(spacing: 8) {
-                                let locked = m.fixed.contains(s.env)
+                                let byPreset = m.presetLocked(s), locked = m.fixed.contains(s.env) || byPreset
                                 if !s.note.isEmpty { Text(s.note).font(HL.body(13, .medium)).foregroundStyle(HL.text).multilineTextAlignment(.center) }
-                                if locked { Text(m.fromLaunch.contains(s.env) ? "Set at launch" : "Set by an env file").font(HL.body(13, .bold)).foregroundStyle(HL.gold) }
+                                if locked { Text(byPreset && !m.fixed.contains(s.env) ? "Set by Potato mode" : m.fromLaunch.contains(s.env) ? "Set at launch" : "Set by an env file").font(HL.body(13, .bold)).foregroundStyle(HL.gold) }
                                 control(s).disabled(locked).opacity(locked ? 0.5 : 1)
                             }
                         }

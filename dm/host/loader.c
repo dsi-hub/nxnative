@@ -330,7 +330,19 @@ static void install_fps_state(module_t *m) {
 }
 // The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
 // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs
+// The launcher's Potato mode (kid-with-sword-remake V18, HookLink VX1): DM_PRESET=potato sets the profile's potato list (game.py, DM_GAME_POTATO: <VAR>=<value>,...) before anything
+// of the game reads them, over the env file's and the launcher's own values (the Render scale slider among them; the launcher locks those rows). First in dm_fps_state_apply
+static void dm_preset_apply(void) {
+    const char *p = getenv("DM_PRESET"); if (!p || strcmp(p, "potato")) return;
+    const char *list = DM_GAME_POTATO; if (!*list) { LOG("[RED] DM_PRESET=potato: this game's profile has no potato list"); return; }
+    char buf[1024]; snprintf(buf, sizeof buf, "%s", list);
+    for (char *save = NULL, *kv = strtok_r(buf, ",", &save); kv; kv = strtok_r(NULL, ",", &save)) {
+        char *eq = strchr(kv, '='); if (!eq) continue; *eq = 0;
+        setenv(kv, eq + 1, 1); LOG("Potato mode: %s=%s", kv, eq + 1);
+    }
+}
 void dm_fps_state_apply(void) {
+    dm_preset_apply();
     // Cool mode (DM_COOL=1, the launcher's Cool mode; kid-with-sword-remake FF9, HookLink VX1): less GPU work, so a phone keeps its clocks longer. The GPU heats an iPhone 18 Pro most at
     // 30 fps with frame generation (the game's own frame 21-24 ms of each 33 ms, the interpolation 2-6 ms more; iOS cut the CPU clock 3.9 -> 1.6 GHz after 145 s). It sets the 3D views to
     // 0.5 (DM_RENDER_SCALE, unless already lower) and frame generation's frames to 0.5 of the size shown (DM_FRAMEGEN_SCALE, unless already lower: HookLink's launcher always passes it).

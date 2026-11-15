@@ -147,6 +147,8 @@ DM_NICK	switch	The account nickname the game sees (default `Player`)
 DM_NRO	switch	`0` turns off loading of the NRO modules the game's NRR files register (on by default): every `nn::ro::LoadModule` then fails
 DM_NRO_CAPTURE	diagnostic	folder: a `nn::ro::LoadModule` with no rewritten copy writes the image to `<folder>/<SHA-256>.nro` and ends the run (the NSP script's capture of an NRO the game decodes at run time)
 DM_NRO_DIR	path	folder of NROs the shader split reads like `main`, and in which it finds a CRA archive's file table (the NSP script sets it for a captured NRO)
+DM_NVN_ALIAS_HI	switch	Percent of Metal's working set above which idle shared textures are retired (alias_retire_idle; default 85, Potato mode 60)
+DM_NVN_ALIAS_LO	switch	Percent of Metal's working set the retirement of idle shared textures goes down to (default 75, or 10 under DM_NVN_ALIAS_HI; Potato mode 50)
 DM_NVN_ALIAS_RETIRE	switch	`0` keeps shared textures until their storage is taken over or their pool goes, as before; by default, while the residency set holds more than 85 % of the working set, shared textures no live texture object has resolved to in 64 submissions are retired, the longest idle first, down to 75 % (`alias_retire_idle`)
 DM_NVN_ALLOCPROF	diagnostic	`=1` charges Metal allocation growth to each replayed op type and function, and logs command allocator sizes and each new texture (serial, size, format, storage); `=2` also gives each main submission a fresh command allocator and reports command memory by operation, by encoder, by submission size and the indirect-count multi-draws encoded
 DM_NVN_API	switch	`=<major>.<minor>` overrides the NVN API version `nvnDeviceGetInteger` reports (by default decided by the SDK version or the profile's `device_api`: 55.15 for SDK 11 and later, 53.313 before)
@@ -315,6 +317,7 @@ DM_PRESENT_LINK	switch	Present pacing: `0` acquires the drawable itself, `1` (th
 DM_PRESENT_SCREEN	switch	`0` turns off the acquire's wait for the screen of `DM_PRESENT_DEPTH` (`ab` with `DM_AB`); default on
 DM_PRESENT_SNAP	player	`=<n>`: present snapshots, a ring of n host textures (2 to 4; `1` = 2) the presents are copied to so the game's swapchain texture is free at once; `0` off (default: the profile's `present_snap`)
 DM_PRESENT_UPSCALE	player	`metalfx` scales a picture smaller than its rectangle on the screen through MetalFX's spatial scaler; `off` (the default) scales it bilinearly
+DM_PRESET	player	`potato` (launcher: Potato mode) sets the game profile's potato list when the game starts (game.tsv `potato`, loader.c dm_preset_apply), over the launcher's own values; anything else, nothing
 DM_PREV_PROGRAM	switch	What `oe::GetPreviousProgramIndex` answers (default -1, started from HOME); `oe::ExecuteProgram` sets it for the program it starts; a relaunch removes it
 DM_PROBE	diagnostic	`=module:offset,…` (Mac only): puts a `brk` at each guest address and on every hit prints the thread, registers, strings they point to and a backtrace, then runs the original instruction
 DM_PROBE_ALL	diagnostic	Set: probe hits (`DM_PROBE`) also print x8–x18
@@ -356,6 +359,7 @@ DM_PSO_PULL_ALL	diagnostic	`=1`: every draw that has a pulling pipeline draws wi
 DM_PSO_RECORD	path	`=<file>`: appends the shaders and pipelines used in the run to that file, for re-recording the prewarm manifest
 DM_PSO_USER	path	The per-device list of shaders and pipelines built on the spot (default: `pso_user.tsv` in the parent of `DM_SAVE`)
 DM_PSO_WAITLOG	diagnostic	`=1` logs each draw that waited more than 20 ms for its pipeline, with its shader pair and why no stand-in served it
+DM_PSO_WARM_ONLY	switch	`1` makes the pipeline prewarm build each pipeline and keep none: it fills the system's Metal shader cache, and a pipeline the game asks for later is made from it in well under a millisecond (Potato mode; off by default)
 DM_QOS_BG	switch	`=<name prefixes, comma-separated>`: guest threads whose name starts with one run at utility QoS under `DM_QOS_MAP` whatever their priority; default the profile's `qos_background` (Ocarina of Time: `OptimizeChangeBan`, the model optimizer's thread, which only gets idle time on the console), `0` none (`hle_thread.c` thread_main)
 DM_QOS_EDGES	switch	`=e1,e2`: the Switch priority edges of `DM_QOS_MAP` (default `44,59`)
 DM_QOS_MAP	switch	`=1` maps guest thread priority to QoS class: ≤ 44 user-interactive, 45–59 user-initiated, the rest utility (off by default: every guest thread runs user-interactive)

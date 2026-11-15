@@ -13,6 +13,7 @@ struct Setting: Decodable, Identifiable {
     var options: [[String]]?   // choice: [value, label]; var: a choice this phone cannot make leaves (deviceAdjusted)
     let min, max, step: Double?   // range
     let on, off: String?   // toggle: the values the variable takes (1 / 0 when not given)
+    let sets: [String]?    // Potato mode (DM_PRESET): the rows it sets when the game starts, locked while it is on (settings.py)
     var id: String { env }
     var sectionTitle: String { section ?? "Game" }
     var basic: Bool { level == "basic" }
@@ -31,7 +32,7 @@ struct Setting: Decodable, Identifiable {
         default: return true
         }
     }
-    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, level, base, options, min, max, step, on, off }
+    enum CodingKeys: String, CodingKey { case env, kind, label, note, def = "default", section, needs, level, base, options, min, max, step, on, off, sets }
 }
 struct SettingsFile: Decodable { let settings: [Setting] }
 
@@ -70,6 +71,11 @@ final class LauncherModel: ObservableObject {
         let key = String(n[n.startIndex..<eq]), want = String(n[n.index(after: eq)...])
         guard let v = values[key] else { return true }
         return v == want
+    }
+    // A row Potato mode sets (its list in the profile, game.tsv potato): locked while Potato mode is on, as the game takes the list's value whatever the row says (loader.c dm_preset_apply)
+    func presetLocked(_ s: Setting) -> Bool {
+        guard let p = settings.first(where: { $0.env == "DM_PRESET" }), let sets = p.sets, (values[p.env] ?? p.def) == p.onValue else { return false }
+        return sets.contains(s.env)
     }
     func rows(in section: String) -> [Setting] { settings.filter { $0.sectionTitle == section && visible($0) } }
     // The Mac window: Basic settings first, then Advanced settings, each in the list's sections and order

@@ -114,6 +114,7 @@ def build(gid, patched, control):
             if can is not None and want not in can: sys.exit(f'settings.tsv:{n}: needs a value {need} never takes: {want} (it takes {", ".join(sorted(can))})')
         if not shown(cond, n): continue
         s = {'env': var, 'kind': kind, 'section': section, 'label': label, 'note': note, 'default': value(default, n), **m}
+        if var == 'DM_PRESET': s['sets'] = [kv.split('=')[0] for kv in macro('DM_GAME_POTATO', n).split(',') if kv]   # the rows Potato mode sets: the launcher locks them while it is on
         if var == 'DM_RENDER_SCALE' and base: s['base'] = base   # the render scale in pixels, for the console mode chosen
         if kind == 'choice':
             opts = [list(l) for l in langs] if values == 'languages' else [v.split('?', 1)[0].split('=', 1) for v in values.split(',') if offered(v, n)]
