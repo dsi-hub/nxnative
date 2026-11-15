@@ -113,19 +113,6 @@ int main(void){@autoreleasepool{
     rc_note((uint64_t)&q[2],1);
     CHECK("stale: a timestamp report is not taken for one",rc_value((uint64_t)&q[2],&x)==1&&x==0);
     rc_forget();atomic_store(&g_rc_complete,c0);g_rc_stale_on=-1;}
-    // The late-result guard: with the setting off, a batch with RC_GUARD_ON% or more not landed turns the result before on; one under RC_GUARD_OFF% turns it off
-    {static uint64_t q[2];uint64_t x=9,c0=atomic_load(&g_rc_complete);g_rc_stale_on=0;g_rc_backlog=0;g_rc_g_n=g_rc_g_late=0;
-    rc_note((uint64_t)&q[0],2);rc_commit(c0+1);atomic_store(&g_rc_complete,c0+1);q[0]=0;rc_note((uint64_t)&q[0],2);
-    CHECK("guard: off at first, a pending query is unknown",!rc_value((uint64_t)&q[0],&x));
-    for(int i=0;i<RC_GUARD_BATCH;i++)rc_guard_note(i<RC_GUARD_BATCH*RC_GUARD_ON/100-1);
-    CHECK("guard: just under its share it stays off",!g_rc_backlog&&!rc_value((uint64_t)&q[0],&x));
-    for(int i=0;i<RC_GUARD_BATCH;i++)rc_guard_note(i<RC_GUARD_BATCH/2);
-    CHECK("guard: half late turns it on, a pending query takes the result before",g_rc_backlog&&rc_value((uint64_t)&q[0],&x)==2&&x==0);
-    for(int i=0;i<RC_GUARD_BATCH;i++)rc_guard_note(i<RC_GUARD_BATCH*5/100);
-    CHECK("guard: between its two shares it stays on",g_rc_backlog);
-    for(int i=0;i<RC_GUARD_BATCH;i++)rc_guard_note(0);
-    CHECK("guard: on time again turns it off",!g_rc_backlog&&!rc_value((uint64_t)&q[0],&x));
-    rc_forget();atomic_store(&g_rc_complete,c0);g_rc_stale_on=-1;g_rc_g_on=0;}
     pend_reset();
     printf("t_sbw: %d checks, %d failed\n",checks,failed);return failed!=0;
 }}

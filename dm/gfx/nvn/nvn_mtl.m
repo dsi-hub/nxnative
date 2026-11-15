@@ -1252,27 +1252,10 @@ static void rc_query_operand(rc_report *r) {
 static int g_rc_stale_on = -1;
 static uint64_t g_rc_st_known, g_rc_st_stale, g_rc_st_unknown, g_rc_st_skipped;   // conditions since the last report line: decided from memory, decided from the result before, drawn unknown; skipped
 static int rc_stale_on(void) { if (g_rc_stale_on < 0) { const char *e = getenv("DM_NVN_RC_STALE"); g_rc_stale_on = e && atoi(e) > 0; /* off unless asked for (the launcher passes its setting); unset, NVN's rule: a pending result draws */ MLOG("render conditions: %s (DM_NVN_RC_STALE)", g_rc_stale_on ? "a pending occlusion result takes the one that landed before it (Skip hidden objects)" : "a pending occlusion result draws"); } return g_rc_stale_on; }
-// The late-result guard (HookLink 1.9, test38 rerun 2026-11-14): with Skip hidden objects off, a GPU running late leaves the occlusion results pending, every hidden object
-// is drawn, the GPU falls further behind, and Hyrule Field stayed at about 15 fps (50-69% of the conditions drawn unknown, GPU 35 ms a frame; on time it is under 2%). While
-// RC_GUARD_ON% or more of a batch of conditions find their result not landed yet, a pending one takes the result before it, as with the setting on; under RC_GUARD_OFF% it stops
-enum { RC_GUARD_BATCH = 512, RC_GUARD_ON = 10, RC_GUARD_OFF = 2 };
-static int g_rc_backlog;
-static uint32_t g_rc_g_n, g_rc_g_late;
-static uint64_t g_rc_g_on;
-static void rc_guard_note(int late) {
-    g_rc_g_late += late != 0;
-    if (++g_rc_g_n < RC_GUARD_BATCH) return;
-    uint32_t pct = g_rc_g_late * 100 / g_rc_g_n; g_rc_g_n = g_rc_g_late = 0;
-    if (!g_rc_backlog && pct >= RC_GUARD_ON) {
-        g_rc_backlog = 1; g_rc_g_on++;
-        if (g_rc_g_on <= 3 || !(g_rc_g_on & (g_rc_g_on - 1))) MLOG("render conditions: %u%% of the last %d found their result not landed (the GPU runs late): pending ones take the result before them until under %d%% (late-result guard, #%llu)", pct, RC_GUARD_BATCH, RC_GUARD_OFF, (unsigned long long)g_rc_g_on);
-    } else if (g_rc_backlog && pct < RC_GUARD_OFF) g_rc_backlog = 0;
-}
 static void rc_report_line(uint64_t frame) {
     uint64_t n = g_rc_st_known + g_rc_st_stale + g_rc_st_unknown; if (!n) return;
-    MLOG("render conditions up to frame %llu: %llu evaluated, %llu from memory, %llu from the result before (Skip hidden objects%s), %llu drawn unknown; %llu skipped (%.0f%%); late-result guard on %llu times so far%s", (unsigned long long)frame,
-         (unsigned long long)n, (unsigned long long)g_rc_st_known, (unsigned long long)g_rc_st_stale, rc_stale_on() ? "" : " or the late-result guard", (unsigned long long)g_rc_st_unknown, (unsigned long long)g_rc_st_skipped, 100.0 * (double)g_rc_st_skipped / (double)n,
-         (unsigned long long)g_rc_g_on, g_rc_backlog ? ", on now" : "");
+    MLOG("render conditions up to frame %llu: %llu evaluated, %llu from memory, %llu from the result before (Skip hidden objects), %llu drawn unknown; %llu skipped (%.0f%%)", (unsigned long long)frame,
+         (unsigned long long)n, (unsigned long long)g_rc_st_known, (unsigned long long)g_rc_st_stale, (unsigned long long)g_rc_st_unknown, (unsigned long long)g_rc_st_skipped, 100.0 * (double)g_rc_st_skipped / (double)n);
     g_rc_st_known = g_rc_st_stale = g_rc_st_unknown = g_rc_st_skipped = 0;
 }
 static void rc_note(uint64_t addr, int kind) {
@@ -1309,7 +1292,7 @@ static int rc_value(uint64_t addr, uint64_t *v) {   // 0 = unknown at encode tim
         if (rc_gpu_unknown(r,done)) return 0;
         if (r->dirty || r->fence>done) {
             if (r->known==255) { *v=r->value; return 1; }
-            if (r->stale_ok && (rc_stale_on() || g_rc_backlog)) { *v=r->stale; return 2; }   // or the late-result guard   // 2: decided from the result before
+            if (r->stale_ok && rc_stale_on()) { *v=r->stale; return 2; }   // 2: decided from the result before
             *v=r->value; return 0;
         }
         if (!r->readable || r->unreliable) return 0;
@@ -16447,7 +16430,6 @@ void mtl_exec(const uint8_t *p) {
                 else { uint64_t x = 0, y = 0; int ka = rc_value(rc->addr, &x), kb = rc_value(rc->addr + 16, &y), known = ka && kb;
                     g_rc_skip = known && (rc->mode ? x == y : x != y);
                     if (!known) g_rc_st_unknown++; else if (ka == 2 || kb == 2) g_rc_st_stale++; else g_rc_st_known++;
-                    if (!rc_stale_on()) rc_guard_note(!known || ka == 2 || kb == 2);   // not landed yet: drawn unknown, or taken from the result before by the guard
                     g_rc_st_skipped += g_rc_skip;
                     PD("E %llu conditional render %s addr=%#llx values %llu / %llu%s%s", g_stat_pass, rc->mode ? "draw if not equal" : "draw if equal", (unsigned long long)rc->addr, (unsigned long long)x, (unsigned long long)y, known ? "" : " (unknown, drawn)", g_rc_skip ? " → not drawn" : ""); }
                 break; }
