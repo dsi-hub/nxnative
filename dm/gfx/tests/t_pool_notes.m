@@ -48,6 +48,7 @@ static void same_as_whole(id<MTLBuffer> patched, const char *label) {
 }
 
 int main(void) { @autoreleasepool {
+    setenv("DM_NVN_POOL_SKIP_RETIRED", "0", 1);   // the rules checked here are those of a game without pool_skip_retired (Ocarina of Time turns it on: t_pool_retired checks that)
     setenv("DM_NVN_RT_RECYCLE", "0", 1);   // textures with allocations of their own: one placed in a recycled heap is resident through its heap, whatever retires it
     mtl_init();
     uint8_t *ma = pages(), *mb = pages(), *mc = pages();
