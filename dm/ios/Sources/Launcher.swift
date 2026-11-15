@@ -235,7 +235,7 @@ private struct LauncherView: View {
     @State private var cheatsOn: Set<String> = Set((UserDefaults.standard.string(forKey: "hooklink.cheats") ?? "").split(separator: "\n").map(String.init))
 
     private var docs: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
-    private var version: String { (info("HookLinkVersion") as? String) ?? "1.9" }   // no build sets HookLinkVersion: this is the version shown; raise it with each HookLink release
+    private var version: String { (info("HookLinkVersion") as? String) ?? "X1" }   // no build sets HookLinkVersion: this is the version shown (HookLink X1, the VX1 line); raise it with each HookLink release
     private var playRows: [Setting] {
         let want = ["DM_FRAME_MODE", "DM_RENDER_SCALE", "DM_DYNAMIC_RESOLUTION", "DM_WIDE_VIEW", "DM_PAD_THEME"]
         return want.compactMap { e in m.settings.first { $0.env == e } }
@@ -299,20 +299,15 @@ private struct LauncherView: View {
                 Text(ByteCountFormatter.string(fromByteCount: Int64(memory), countStyle: .memory) + " free memory").font(HL.body(14, .heavy)).foregroundStyle(HL.dim).monospacedDigit()
             }.padding(.horizontal, 20)
             HStack(spacing: 6) {
-                keyCap("L")
                 ForEach(HLTab.allCases, id: \.rawValue) { t in
                     Button { tab = t } label: {
                         Text(t.title).font(HL.body(17, .heavy)).foregroundStyle(tab == t ? Color.white : HL.dim)
                             .padding(.horizontal, 28).frame(height: 46).background(tab == t ? HL.tabOn : Color.clear)
                     }.buttonStyle(.plain).accessibilityAddTraits(tab == t ? .isSelected : [])
                 }
-                keyCap("R")
             }
         }
         .frame(height: 46).background(HL.bar).overlay(Rectangle().fill(HL.line).frame(height: 1), alignment: .bottom)
-    }
-    private func keyCap(_ t: String) -> some View {
-        Text(t).font(HL.body(11, .heavy)).foregroundStyle(HL.ground).frame(width: 24, height: 18).background(HL.dim).clipShape(RoundedRectangle(cornerRadius: 4)).accessibilityHidden(true)
     }
     private func panel<V: View>(_ title: String, @ViewBuilder _ content: () -> V) -> some View {
         VStack(spacing: 8) {
