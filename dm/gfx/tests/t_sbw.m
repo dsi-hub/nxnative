@@ -113,6 +113,17 @@ int main(void){@autoreleasepool{
     rc_note((uint64_t)&q[2],1);
     CHECK("stale: a timestamp report is not taken for one",rc_value((uint64_t)&q[2],&x)==1&&x==0);
     rc_forget();atomic_store(&g_rc_complete,c0);g_rc_stale_on=-1;}
+    // A condition's pair: a result before beside a report that landed this frame is not compared (two frames' counts); two results before, or one beside a constant, are
+    {static uint64_t q[4];uint64_t x=9,y=9,c0=atomic_load(&g_rc_complete);int st=0;g_rc_stale_on=1;g_rc_st_mixed=0;
+    rc_note((uint64_t)&q[0],2);rc_note((uint64_t)&q[2],2);rc_commit(c0+1);atomic_store(&g_rc_complete,c0+1);q[0]=10;q[2]=20;   // last frame: begin 10, end 20 (visible), landed
+    rc_note((uint64_t)&q[0],2);rc_note((uint64_t)&q[2],2);   // this frame's pair, both pending
+    CHECK("pair: two results before are compared",rc_pair((uint64_t)&q[0],&x,&y,&st)&&st&&x==10&&y==20);
+    rc_commit(c0+2);atomic_store(&g_rc_complete,c0+2);q[0]=20;   // this frame's begin lands (20), its end
+    rc_note((uint64_t)&q[2],2);   // a newer end report goes pending: the end takes the result before (20)
+    CHECK("pair: this frame's begin beside last frame's end is not compared",!rc_pair((uint64_t)&q[0],&x,&y,&st)&&!st&&g_rc_st_mixed==1);
+    static uint64_t k[4];rc_note((uint64_t)&k[0],2);rc_commit(c0+3);atomic_store(&g_rc_complete,c0+3);k[0]=0;rc_note((uint64_t)&k[0],2);k[2]=0;   // a query beside a constant 0 (no report)
+    CHECK("pair: a result before beside a constant is compared",rc_pair((uint64_t)&k[0],&x,&y,&st)&&st&&x==0&&y==0);
+    rc_forget();atomic_store(&g_rc_complete,c0);g_rc_stale_on=-1;g_rc_st_mixed=0;}
     // The late-result guard: with the setting off, a batch with RC_GUARD_ON% or more not landed turns the result before on; one under RC_GUARD_OFF% turns it off
     {static uint64_t q[2];uint64_t x=9,c0=atomic_load(&g_rc_complete);g_rc_stale_on=0;g_rc_backlog=0;g_rc_g_n=g_rc_g_late=0;
     rc_note((uint64_t)&q[0],2);rc_commit(c0+1);atomic_store(&g_rc_complete,c0+1);q[0]=0;rc_note((uint64_t)&q[0],2);
