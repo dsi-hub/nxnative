@@ -332,8 +332,10 @@ static void install_fps_state(module_t *m) {
 // DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs
 // The launcher's Potato mode (kid-with-sword-remake V18, HookLink VX1): DM_PRESET=potato sets the profile's potato list (game.py, DM_GAME_POTATO: <VAR>=<value>,...) before anything
 // of the game reads them, over the env file's and the launcher's own values (the Render scale slider among them; the launcher locks those rows). First in dm_fps_state_apply
+static int g_scale_forced;   // Cool mode or Potato mode fixed the render scale: it holds even with dynamic resolution on (dm_fps_state_apply)
 static void dm_preset_apply(void) {
     const char *p = getenv("DM_PRESET"); if (!p || strcmp(p, "potato")) return;
+    g_scale_forced = 1;
     const char *list = DM_GAME_POTATO; if (!*list) { LOG("[RED] DM_PRESET=potato: this game's profile has no potato list"); return; }
     char buf[1024]; snprintf(buf, sizeof buf, "%s", list);
     for (char *save = NULL, *kv = strtok_r(buf, ",", &save); kv; kv = strtok_r(NULL, ",", &save)) {
@@ -349,6 +351,7 @@ void dm_fps_state_apply(void) {
     // Mac, one route: GPU busy about 13 ms a frame against 17-20 ms, the interpolation about 1.5 ms against 3 ms
     { const char *c = getenv("DM_COOL");
       if (c && !strcmp(c, "1")) {
+          g_scale_forced = 1;
           const char *r = getenv("DM_RENDER_SCALE"); if (!r || !(atof(r) > 0 && atof(r) <= 0.5)) setenv("DM_RENDER_SCALE", "0.5", 1);
           const char *f = getenv("DM_FRAMEGEN_SCALE"); if (!f || !(atof(f) >= 0.5 && atof(f) <= 0.5)) setenv("DM_FRAMEGEN_SCALE", "0.5", 1);
           LOG("cool mode (DM_COOL=1): render scale %s, frame generation's frames at %s of the size shown", getenv("DM_RENDER_SCALE"), getenv("DM_FRAMEGEN_SCALE")); } }
@@ -361,7 +364,11 @@ void dm_fps_state_apply(void) {
     // Hades II's 3.0). Independent of the frame step: written at target 0 too
     const char *rs = getenv("DM_RENDER_SCALE"); float sc = 1.0f, hi = g_render_scale_max;
     if (rs) { char *end; sc = strtof(rs, &end); if (end != rs && !*end && sc >= 10.0f && sc <= 100.0f) sc /= 100.0f;   /* a percentage (75 = 0.75): a Mac player's env.txt had DM_RENDER_SCALE=75 */
-      if (end == rs || *end || !(sc >= 0.5f && sc <= hi)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.5 to %.1f; keeping the game's size", rs, hi); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
+      if (end == rs || *end || !(sc >= 0.25f && sc <= hi)) { LOG("[RED] DM_RENDER_SCALE=%s: must be 0.25 to %.1f; keeping the game's size", rs, hi); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
+    // HookLink VX1: with the game's dynamic resolution on (DM_DYNAMIC_RESOLUTION=1) the size is left to it (0 at +0x10: Ocarina of Time's render-scale stub runs the game's own
+    // code, which the dynamic resolution stub drives), unless Cool mode or Potato mode fixed a smaller one (g_scale_forced): the launcher always passes its Render scale, so a fixed
+    // scale would otherwise turn dynamic resolution off for every player who left it on
+    { const char *d = getenv("DM_DYNAMIC_RESOLUTION"); if (d && !strcmp(d, "1") && !g_scale_forced && rs) { sc = 0.0f; LOG("%s: render scale left to the dynamic resolution (DM_DYNAMIC_RESOLUTION=1)", g_fps_mod); } }
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
     // The game's own dynamic resolution, for builds whose stubs read it (the DYNAMIC_RESOLUTION capability of a frame step stub: Ocarina of Time's level function): 1 lets it
     // run, 0 (the default) holds full resolution. Builds without such a stub ignore the field

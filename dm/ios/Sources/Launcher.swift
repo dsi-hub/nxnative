@@ -129,6 +129,9 @@ private struct HLResolutionDial: View {
     let scale: Setting
     private static let steps: [(String, Double)] = [("Coolest", 0.5), ("Cool", 0.5), ("Balanced", 0.667), ("Sharp", 0.8), ("Sharpest", 1.0)]
     private var cool: Setting? { m.settings.first { $0.env == "DM_COOL" } }
+    private var dyn: Setting? { m.settings.first { $0.env == "DM_DYNAMIC_RESOLUTION" } }
+    // Dynamic resolution on: the game picks the size (loader.c leaves the scale to it), so the dial reads Auto; moving it fixes a size and turns dynamic resolution off
+    private var auto: Bool { guard let d = dyn else { return false }; return (m.values[d.env] ?? d.def) == d.onValue && level != 0 }
     private var lo: Int { cool == nil ? 1 : 0 }
     private var locked: Bool { m.fixed.contains(scale.env) || m.presetLocked(scale) }
     private var level: Int {
@@ -139,6 +142,7 @@ private struct HLResolutionDial: View {
     private func set(_ l: Int) {
         let l = max(lo, min(4, l)); guard !locked, l != level else { return }
         if let c = cool { m.values[c.env] = l == 0 ? c.onValue : c.offValue }
+        if let d = dyn, l != 0 { m.values[d.env] = d.offValue }
         let v = min(max(Self.steps[l].1, scale.min ?? 0), scale.max ?? 1)
         m.values[scale.env] = String(format: "%.2f", v)
         UISelectionFeedbackGenerator().selectionChanged()
@@ -148,7 +152,7 @@ private struct HLResolutionDial: View {
             HStack {
                 Text("Resolution").font(HL.body(13, .bold)).foregroundStyle(HL.dim)
                 Spacer()
-                Text(locked ? "Set by Potato mode" : Self.steps[level].0).font(HL.body(13, .heavy)).foregroundStyle(locked ? HL.gold : HL.text)
+                Text(locked ? "Set by Potato mode" : auto ? "Auto" : Self.steps[level].0).font(HL.body(13, .heavy)).foregroundStyle(locked ? HL.gold : HL.text)
             }
             GeometryReader { g in
                 let f = CGFloat(level - lo) / CGFloat(4 - lo), w = g.size.width
@@ -162,12 +166,12 @@ private struct HLResolutionDial: View {
                 .gesture(DragGesture(minimumDistance: 0).onChanged { v in set(lo + Int((v.location.x / max(w, 1) * CGFloat(4 - lo)).rounded())) })
             }
             .frame(height: 22)
-            Text(m.rangeLabel(scale, Double(m.values[scale.env] ?? scale.def) ?? 0.667)).font(HL.body(12, .medium)).foregroundStyle(HL.dim).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+            Text(auto ? "Dynamic resolution picks the size. Move the dial to fix one." : m.rangeLabel(scale, Double(m.values[scale.env] ?? scale.def) ?? 0.667)).font(HL.body(12, .medium)).foregroundStyle(HL.dim).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
         }
         .opacity(locked ? 0.6 : 1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Resolution")
-        .accessibilityValue(locked ? "Set by Potato mode" : Self.steps[level].0)
+        .accessibilityValue(locked ? "Set by Potato mode" : auto ? "Auto, dynamic resolution" : Self.steps[level].0)
         .accessibilityAdjustableAction { d in set(level + (d == .increment ? 1 : -1)) }
     }
 }
