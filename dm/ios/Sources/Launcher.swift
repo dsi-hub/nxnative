@@ -548,6 +548,30 @@ private struct LauncherView: View {
     }
 }
 
+// This phone's own starting values and the choices it cannot make (from kid-with-sword-remake's FF11 deviceSetup, HookLink VX1):
+// - under 10 GB of memory, Cool mode starts on (a phone with less memory is the one that heats and runs out first)
+// - on a GPU without Metal 4 MetalFX frame interpolation, as the game found it at its last start (nvn_mtl.m fg_on keeps dm.framegen.unsupported), the frame generation rows leave and the
+//   frame rate mode offers no frame generation. The launcher can't ask the GPU itself: a Metal device made here comes before MTL_HUD_ENABLED and kept the Performance HUD off (GitHub issue #840)
+func deviceAdjusted(_ list: [Setting]) -> [Setting] {
+    let gb = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+    let noFG = UserDefaults.standard.bool(forKey: "dm.framegen.unsupported")
+    if noFG { fputs("launcher: frame generation unavailable (the last start found no Metal 4 MetalFX frame interpolator)\n", stderr) }
+    var out: [Setting] = []
+    for var s in list {
+        if noFG && ["DM_FRAMEGEN", "DM_FRAMEGEN_SCALE", "DM_FRAMEGEN_MV"].contains(s.env) { continue }
+        if noFG && s.env == "DM_FRAME_MODE", let o = s.options {
+            s.options = o.filter { !$0[1].localizedCaseInsensitiveContains("frame generation") }
+            if !(s.options ?? []).contains(where: { $0[0] == s.def }) { s.def = s.options?.first?[0] ?? s.def }
+        }
+        if gb < 10 && s.env == "DM_COOL" {
+            s.def = s.onValue; s.note += (s.note.isEmpty ? "" : " ") + "On by default on this iPhone (\(String(format: "%.0f", gb)) GB of memory)."
+            fputs(String(format: "launcher: this phone has %.1f GB of memory: Cool mode on by default\n", gb), stderr)
+        }
+        out.append(s)
+    }
+    return out
+}
+
 // Shows the launcher over the root view controller and calls done once the settings are in the environment; false (done is not called) when there is no launcher
 @_cdecl("dm_show_launcher")
 public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @convention(c) () -> Void) -> Bool {
@@ -555,7 +579,7 @@ public func dmShowLauncher(_ viewController: UnsafeMutableRawPointer, _ done: @c
     let dir = getenv("DM_APP_DM").map { URL(fileURLWithPath: String(cString: $0)) } ?? Bundle.main.resourceURL?.appendingPathComponent("dm")
     guard let url = dir?.appendingPathComponent("launcher.json"), let data = try? Data(contentsOf: url) else { return false }
     guard let file = try? JSONDecoder().decode(SettingsFile.self, from: data), !file.settings.isEmpty else { fputs("[RED] launcher: dm/launcher.json cannot be read; starting the game\n", stderr); return false }
-    let model = LauncherModel(file.settings)
+    let model = LauncherModel(deviceAdjusted(file.settings))
     gameMenuModel = model   // the in-game menu shows and saves the same choices (GameMenu.swift)
     if ProcessInfo.processInfo.environment["DM_LAUNCHER"] == "0" { fputs("launcher: off (DM_LAUNCHER=0)\n", stderr); model.applySaved(); return false }
     let parent = Unmanaged<UIViewController>.fromOpaque(viewController).takeUnretainedValue()

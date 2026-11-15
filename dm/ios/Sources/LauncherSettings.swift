@@ -3,13 +3,14 @@ import Foundation
 import Combine
 
 struct Setting: Decodable, Identifiable {
-    let env, kind, label, note, def: String
+    let env, kind, label: String
+    var note, def: String   // var: this phone's own starting values and notes (Launcher.swift deviceAdjusted)
     let section: String?   // heading on the settings screen; absent in older bundles
     let needs: String?     // "<VAR>=<value>": a sub-setting, drawn only while that setting has that value
     let level: String?     // "basic": shown first (the Mac window's Basic settings); any other or none: Advanced settings. The iPhone keeps one list
     let base: Base?        // render scale: the 3D views' size at 1.0, docked and handheld, for the size in pixels (the Mac window)
     struct Base: Decodable { let docked, handheld: [Int] }
-    let options: [[String]]?   // choice: [value, label]
+    var options: [[String]]?   // choice: [value, label]; var: a choice this phone cannot make leaves (deviceAdjusted)
     let min, max, step: Double?   // range
     let on, off: String?   // toggle: the values the variable takes (1 / 0 when not given)
     var id: String { env }
