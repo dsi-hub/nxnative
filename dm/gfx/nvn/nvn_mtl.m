@@ -1244,7 +1244,7 @@ static void rc_query_operand(rc_report *r) {
     if (r->opaque_later) { r->known=0; r->opaque_later=0; }
     if (r->opaque_unreliable) r->unreliable=1;
 }
-// Skip hidden objects (DM_NVN_RC_STALE, on by default in HookLink): a condition on a samples-passed result that has not landed yet takes the result that landed before it at
+// Skip hidden objects (DM_NVN_RC_STALE, off by default; in Ocarina of Time the result before at an address can be another object's: Link, horses and grass in view drawn as pale-blue blocks, HookLink 1.9 test39-40): a condition on a samples-passed result that has not landed yet takes the result that landed before it at
 // the same address, the same query a frame earlier, instead of drawing. Metal has no predication to decide it on the GPU in time, so every one was drawn: in Hyrule Field
 // the one-draw foliage of task / mesh shaders behind the hills, about 9 ms of an iPhone 18 Pro Max's 19-20 ms frame there (their conditions all read unknown, 2026-11-07),
 // and 1,000-1,500 samples-passed reports a frame in the test31 log. The cost: an object coming into view is drawn one frame late. After cheemu21's X12 (kid-with-sword-remake,
