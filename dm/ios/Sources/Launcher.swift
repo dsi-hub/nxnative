@@ -99,6 +99,9 @@ private enum HL {
     static let ground = Color(red: 0.106, green: 0.078, blue: 0.047), bar = Color(red: 0.145, green: 0.106, blue: 0.063), panel = Color(red: 0.055, green: 0.039, blue: 0.024)
     static let line = Color(red: 0.365, green: 0.290, blue: 0.173), trim = Color(red: 0.541, green: 0.439, blue: 0.251), gold = Color(red: 0.788, green: 0.659, blue: 0.353)
     static let text = Color(red: 0.937, green: 0.894, blue: 0.784), dim = Color(red: 0.788, green: 0.722, blue: 0.561), tabOn = Color(red: 0.247, green: 0.192, blue: 0.118)
+    // HookLink X1's polish: a cream for names, two quieter golds for notes and labels, the line under quiet rows and the well a slider runs in
+    static let cream = Color(red: 1.0, green: 0.965, blue: 0.871), muted = Color(red: 0.659, green: 0.592, blue: 0.478), faint = Color(red: 0.494, green: 0.439, blue: 0.353)
+    static let soft = Color(red: 0.725, green: 0.663, blue: 0.537), edge = Color(red: 0.227, green: 0.180, blue: 0.106), well = Color(red: 0.165, green: 0.125, blue: 0.078)
     static func serif(_ size: CGFloat) -> Font { .system(size: size, weight: .bold, design: .serif) }
     static func body(_ size: CGFloat, _ weight: Font.Weight = .semibold) -> Font { .system(size: size, weight: weight, design: .rounded) }
 }
@@ -148,26 +151,34 @@ private struct HLResolutionDial: View {
         UISelectionFeedbackGenerator().selectionChanged()
     }
     var body: some View {
-        VStack(spacing: 6) {
-            HStack {
-                Text("Resolution").font(HL.body(13, .bold)).foregroundStyle(HL.dim)
+        VStack(spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("RESOLUTION").font(HL.body(12, .heavy)).tracking(0.7).foregroundStyle(HL.muted)
                 Spacer()
-                Text(locked ? "Set by Potato mode" : auto ? "Auto" : Self.steps[level].0).font(HL.body(13, .heavy)).foregroundStyle(locked ? HL.gold : HL.text)
+                Text(locked ? "Set by Potato mode" : auto ? "Auto" : Self.steps[level].0).font(HL.body(14, .heavy)).foregroundStyle(locked ? HL.gold : HL.cream)
             }
             GeometryReader { g in
                 let f = CGFloat(level - lo) / CGFloat(4 - lo), w = g.size.width
                 ZStack(alignment: .leading) {
-                    Capsule().fill(HL.panel).overlay(Capsule().stroke(HL.line, lineWidth: 1)).frame(height: 8)
-                    Capsule().fill(LinearGradient(colors: [Color(red: 0.55, green: 0.75, blue: 0.95), HL.gold], startPoint: .leading, endPoint: .trailing)).frame(width: max(8, w * f), height: 8)
-                    Rectangle().fill(HL.gold).frame(width: 14, height: 14).rotationEffect(.degrees(45)).overlay(Rectangle().stroke(Color.white, lineWidth: 1.5).rotationEffect(.degrees(45)))
-                        .shadow(color: HL.gold.opacity(0.6), radius: 4).offset(x: (w - 14) * f)
+                    Capsule().fill(HL.well).frame(height: 6)
+                    Capsule().fill(LinearGradient(colors: [Color(red: 0.50, green: 0.71, blue: 0.92), HL.gold], startPoint: .leading, endPoint: .trailing)).frame(width: max(6, w * f), height: 6)
+                    ForEach(lo...4, id: \.self) { i in
+                        RoundedRectangle(cornerRadius: 1).fill(HL.line).frame(width: 2, height: 10).offset(x: (w - 2) * CGFloat(i - lo) / CGFloat(4 - lo))
+                    }
+                    Circle().fill(HL.cream).frame(width: 20, height: 20).overlay(Circle().stroke(HL.gold, lineWidth: 2))
+                        .shadow(color: .black.opacity(0.5), radius: 3, y: 2).offset(x: (w - 20) * f)
                 }
                 .frame(maxHeight: .infinity).contentShape(Rectangle())
                 .gesture(DragGesture(minimumDistance: 0).onChanged { v in set(lo + Int((v.location.x / max(w, 1) * CGFloat(4 - lo)).rounded())) })
             }
             .frame(height: 22)
-            Text(auto ? "Dynamic resolution picks the size. Move the dial to fix one." : m.rangeLabel(scale, Double(m.values[scale.env] ?? scale.def) ?? 0.667)).font(HL.body(12, .medium)).foregroundStyle(HL.dim).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+            HStack { ForEach(lo...4, id: \.self) { i in Text(Self.steps[i].0).font(HL.body(10.5, .bold)).foregroundStyle(i == level && !auto ? HL.cream : HL.faint); if i < 4 { Spacer(minLength: 0) } } }
+            Text(auto ? "Dynamic resolution picks the size. Move the dial to fix one." : m.rangeLabel(scale, Double(m.values[scale.env] ?? scale.def) ?? 0.667))
+                .font(HL.body(11.5, .semibold)).foregroundStyle(HL.muted).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
         }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .background(HL.panel.opacity(0.75), in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(HL.line, lineWidth: 1))
         .opacity(locked ? 0.6 : 1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Resolution")
@@ -176,21 +187,68 @@ private struct HLResolutionDial: View {
     }
 }
 
-/// One row of a list: its name on the left, its value on the right, outlined when chosen
+/// One row of a list: its name on the left, its value on the right, outlined in gold when chosen
 private struct HLRow: View {
     let title: String, value: String, chosen: Bool, action: () -> Void
+    var valueColor: Color? = nil
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                Text(title).font(HL.body(14, .bold)).foregroundStyle(HL.text).lineLimit(1)
+                Text(title).font(HL.body(14, .bold)).foregroundStyle(HL.cream).lineLimit(1).minimumScaleFactor(0.8)
                 Spacer(minLength: 8)
-                Text(value).font(HL.body(13, .medium)).foregroundStyle(chosen ? HL.text : HL.dim).lineLimit(1)
+                Text(value).font(HL.body(12.5, .bold)).foregroundStyle(valueColor ?? (chosen ? HL.gold : HL.muted)).lineLimit(1)
             }
             .padding(.horizontal, 14).frame(minHeight: 44)
-            .background(Color.white.opacity(chosen ? 0.12 : 0.045))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(chosen ? Color.white : HL.line, lineWidth: chosen ? 2 : 1))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .background(chosen ? AnyShapeStyle(LinearGradient(colors: [HL.tabOn, HL.well], startPoint: .leading, endPoint: .trailing)) : AnyShapeStyle(HL.ground.opacity(0.6)), in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(chosen ? HL.gold : HL.edge, lineWidth: chosen ? 1.5 : 1))
+            .contentShape(RoundedRectangle(cornerRadius: 9))
         }.buttonStyle(.plain)
+    }
+}
+
+/// A quick setting on the Play tab: its name, its state and what it does; lit in gold when on. A setting an env file or Potato mode sets is dimmed and says so
+private struct HLTile: View {
+    let title: String, state: String, what: String, on: Bool, locked: String?, action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(title).font(HL.body(13.5, .heavy)).foregroundStyle(HL.cream).lineLimit(1).minimumScaleFactor(0.8)
+                    Spacer(minLength: 4)
+                    Text(locked ?? state).font(HL.body(10.5, .heavy)).foregroundStyle(on ? HL.gold : HL.faint).lineLimit(1)
+                }
+                Text(what).font(HL.body(11, .medium)).foregroundStyle(HL.soft).lineLimit(3).minimumScaleFactor(0.85).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 11).padding(.vertical, 9).frame(maxWidth: .infinity, minHeight: 88, maxHeight: 96, alignment: .topLeading)
+            .background(on ? AnyShapeStyle(LinearGradient(colors: [HL.tabOn, Color(red: 0.173, green: 0.133, blue: 0.078)], startPoint: .top, endPoint: .bottom)) : AnyShapeStyle(HL.panel.opacity(0.72)), in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(on ? HL.gold : HL.edge, lineWidth: on ? 1.5 : 1))
+            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .opacity(locked == nil ? 1 : 0.6)
+        }.buttonStyle(.plain).disabled(locked != nil)
+        .accessibilityElement(children: .combine).accessibilityAddTraits(on ? .isSelected : [])
+    }
+}
+/// A small fact under the quick settings (Light movies on, the touch style, free space)
+private struct HLChip: View {
+    let text: String
+    var body: some View {
+        Text(text).font(HL.body(11.5, .bold)).foregroundStyle(HL.dim).padding(.horizontal, 10).padding(.vertical, 5)
+            .background(HL.ground, in: Capsule()).overlay(Capsule().stroke(HL.edge, lineWidth: 1))
+    }
+}
+/// A note on the Play tab (the phone is warm, Low Power Mode, little free space)
+private struct HLBanner: View {
+    let text: String
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.circle").font(.system(size: 16, weight: .semibold)).foregroundStyle(HL.gold).accessibilityHidden(true)
+            Text(text).font(HL.body(12, .semibold)).foregroundStyle(HL.text).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(HL.gold.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(HL.gold.opacity(0.35), lineWidth: 1))
     }
 }
 private struct ShareSheet: UIViewControllerRepresentable {
@@ -199,6 +257,7 @@ private struct ShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
 private struct ShareItems: Identifiable { let id = UUID(); let urls: [URL] }
+private struct ExtraSheet: Identifiable { let id: String; let title: String }
 
 private let hlCredits = """
 HookLink builds on other people's work. Thank you to:
@@ -227,6 +286,8 @@ private struct LauncherView: View {
     @State private var tab: HLTab = .play
     @State private var chosen: String = "DM_FRAME_MODE"
     @State private var extra: String = "saves"
+    @State private var section: String = ""   // the Settings tab's section (Game, Controls, Performance)
+    @State private var detail: ExtraSheet?     // an Extras card's page (saves, cloud saves, cheats, reset, credits)
     @State private var share: ShareItems?
     @State private var picking = false
     @State private var editing = false   // the Inventory manager (InventoryManager.swift)
@@ -260,7 +321,6 @@ private struct LauncherView: View {
     var body: some View {
         VStack(spacing: 0) {
             titleBar
-            Trim().stroke(HL.trim, lineWidth: 2).frame(height: 16).background(HL.ground)
             Group {
                 switch tab {
                 case .play: playTab
@@ -269,9 +329,21 @@ private struct LauncherView: View {
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(HL.ground.ignoresSafeArea())
+        .background(RadialGradient(colors: [Color(red: 0.165, green: 0.122, blue: 0.071), HL.ground, Color(red: 0.071, green: 0.051, blue: 0.027)], center: .init(x: 0.3, y: 0.4), startRadius: 20, endRadius: 700).ignoresSafeArea())
         .preferredColorScheme(.dark)
         .sheet(item: $share) { ShareSheet(items: $0.urls) }
+        .sheet(item: $detail) { d in
+            VStack(spacing: 12) {
+                HStack {
+                    Text(d.title).font(HL.serif(22)).foregroundStyle(.white)
+                    Spacer()
+                    Button("Done") { detail = nil }.font(HL.body(15, .heavy)).foregroundStyle(HL.gold)
+                }
+                Divider2()
+                ScrollView { extraDetail }
+            }
+            .padding(20).background(HL.ground.ignoresSafeArea()).preferredColorScheme(.dark)
+        }
         .fullScreenCover(isPresented: $editing) { InventoryManagerView { editing = false } }
         .confirmationDialog(SaveSyncReport.chooseTitle, isPresented: isAsking(.choose), titleVisibility: .visible, presenting: report) { r in
             Button(r.localLabel(here: "iPhone")) { go(r.localChoice) }
@@ -295,103 +367,173 @@ private struct LauncherView: View {
         }
     }
 
+    // The title bar: HookLink's name, the three tabs (the chosen one raised, a gold line on top) and the free memory. Its colour runs to the screen's edges; what it holds stays
+    // inside the safe area, clear of the Dynamic Island on either side
     private var titleBar: some View {
         ZStack {
             HStack {
-                Text("HookLink \(version)").font(HL.body(14, .heavy)).foregroundStyle(HL.dim)
+                Text("HookLink \(version)").font(HL.serif(14)).tracking(0.5).foregroundStyle(HL.gold)
                 Spacer()
-                Text(ByteCountFormatter.string(fromByteCount: Int64(memory), countStyle: .memory) + " free memory").font(HL.body(14, .heavy)).foregroundStyle(HL.dim).monospacedDigit()
-            }.padding(.horizontal, 20)
-            HStack(spacing: 6) {
+                Text(ByteCountFormatter.string(fromByteCount: Int64(memory), countStyle: .memory) + " free").font(HL.body(12.5, .bold)).foregroundStyle(HL.muted).monospacedDigit()
+            }.padding(.horizontal, 6)
+            HStack(alignment: .bottom, spacing: 4) {
                 ForEach(HLTab.allCases, id: \.rawValue) { t in
                     Button { tab = t } label: {
-                        Text(t.title).font(HL.body(17, .heavy)).foregroundStyle(tab == t ? Color.white : HL.dim)
-                            .padding(.horizontal, 28).frame(height: 46).background(tab == t ? HL.tabOn : Color.clear)
+                        Text(t.title).font(HL.body(15, .heavy)).foregroundStyle(tab == t ? HL.cream : HL.muted)
+                            .padding(.horizontal, tab == t ? 28 : 24).frame(height: 40)
+                            .background(tab == t ? AnyShapeStyle(HL.ground) : AnyShapeStyle(Color.clear), in: UnevenRoundedRectangle(topLeadingRadius: 10, topTrailingRadius: 10))
+                            .overlay(alignment: .top) { if tab == t { Rectangle().fill(HL.gold).frame(height: 2).padding(.horizontal, 6) } }
+                            .overlay(UnevenRoundedRectangle(topLeadingRadius: 10, topTrailingRadius: 10).stroke(tab == t ? HL.trim : Color.clear, lineWidth: 1))
+                            .contentShape(Rectangle())
                     }.buttonStyle(.plain).accessibilityAddTraits(tab == t ? .isSelected : [])
                 }
-            }
+            }.frame(maxHeight: .infinity, alignment: .bottom)
         }
-        .frame(height: 46).background(HL.bar).overlay(Rectangle().fill(HL.line).frame(height: 1), alignment: .bottom)
+        .frame(height: 44)
+        .background(LinearGradient(colors: [Color(red: 0.169, green: 0.125, blue: 0.075), Color(red: 0.129, green: 0.094, blue: 0.063)], startPoint: .top, endPoint: .bottom).ignoresSafeArea(edges: [.horizontal, .top]))
+        .overlay(Rectangle().fill(HL.line).frame(height: 1).ignoresSafeArea(edges: .horizontal), alignment: .bottom)
     }
     private func panel<V: View>(_ title: String, @ViewBuilder _ content: () -> V) -> some View {
-        VStack(spacing: 8) {
-            Text(title).font(HL.serif(24)).foregroundStyle(.white).multilineTextAlignment(.center)
-            Divider2()
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(HL.serif(22)).foregroundStyle(.white)
             content()
         }
-        .padding(.horizontal, 24).padding(.vertical, 10).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(HL.panel).overlay(Rectangle().fill(HL.line).frame(width: 1), alignment: .leading)
+        .padding(.horizontal, 20).padding(.vertical, 14).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(HL.panel.opacity(0.82), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(HL.line, lineWidth: 1))
     }
+    private func label(_ t: String) -> some View { Text(t).font(HL.body(12, .heavy)).tracking(0.7).foregroundStyle(HL.muted) }
 
-    // Play: the first launcher's column on the left, how the game will run on the right
+    // Play: the game, Play and the Resolution dial in the middle of the left side; on the right, the quick settings, each saying what it does, and the notes
     private var playTab: some View {
         GeometryReader { g in
-            HStack(spacing: 0) {
+            HStack(spacing: 18) {
                 VStack(spacing: 12) {
-                    if let icon = appIcon() {
-                        Image(uiImage: icon).resizable().frame(width: 104, height: 104).clipShape(RoundedRectangle(cornerRadius: 22))
-                            .overlay(RoundedRectangle(cornerRadius: 22).stroke(HL.trim, lineWidth: 2)).shadow(color: .black.opacity(0.6), radius: 9, y: 6).accessibilityHidden(true)
+                    VStack(spacing: 7) {
+                        if let icon = appIcon() {
+                            Image(uiImage: icon).resizable().frame(width: 72, height: 72).clipShape(RoundedRectangle(cornerRadius: 17))
+                                .overlay(RoundedRectangle(cornerRadius: 17).stroke(HL.gold, lineWidth: 1.5)).shadow(color: .black.opacity(0.55), radius: 7, y: 6).accessibilityHidden(true)
+                        }
+                        Text((info("CFBundleDisplayName") as? String) ?? "Game").font(HL.serif(19)).foregroundStyle(.white).multilineTextAlignment(.center).lineLimit(2).minimumScaleFactor(0.7)
+                        Text("Version \((info("CFBundleShortVersionString") as? String) ?? "") · Ready to play").font(HL.body(12, .semibold)).foregroundStyle(HL.muted)
                     }
-                    Text((info("CFBundleDisplayName") as? String) ?? "Game").font(HL.serif(25)).foregroundStyle(.white).multilineTextAlignment(.center).lineLimit(3).minimumScaleFactor(0.7)
-                    Text("Version \((info("CFBundleShortVersionString") as? String) ?? "")  •  Ready to play").font(HL.body(13, .medium)).foregroundStyle(HL.dim)
-                    if let rs = m.settings.first(where: { $0.env == "DM_RENDER_SCALE" }) { HLResolutionDial(m: m, scale: rs).padding(.vertical, 2) }
                     Button(action: { applyCheats(); autoBackup(); start() }) {
-                        Text("Play").font(HL.body(22, .heavy)).foregroundStyle(HL.ground).frame(maxWidth: .infinity).frame(height: 54)
-                            .background(LinearGradient(colors: [Color(red: 0.914, green: 0.776, blue: 0.416), Color(red: 0.773, green: 0.604, blue: 0.204)], startPoint: .top, endPoint: .bottom))
-                            .clipShape(RoundedRectangle(cornerRadius: 6)).overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white, lineWidth: 2))
-                            .shadow(color: Color(red: 1, green: 0.925, blue: 0.667).opacity(0.5), radius: 7)
+                        HStack(spacing: 10) { Image(systemName: "play.fill").font(.system(size: 17, weight: .heavy)); Text("Play").font(HL.body(22, .heavy)) }
+                            .foregroundStyle(HL.ground).frame(maxWidth: .infinity).frame(height: 52)
+                            .background(LinearGradient(colors: [Color(red: 0.945, green: 0.824, blue: 0.494), Color(red: 0.851, green: 0.690, blue: 0.310), Color(red: 0.725, green: 0.549, blue: 0.173)], startPoint: .top, endPoint: .bottom), in: RoundedRectangle(cornerRadius: 14))
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(red: 1, green: 0.945, blue: 0.78), lineWidth: 1))
+                            .shadow(color: HL.gold.opacity(0.3), radius: 9, y: 6)
                     }.buttonStyle(.plain).disabled(checking)
                     if checking {
                         HStack(spacing: 6) { ProgressView(); Text("Checking the cloud save…").font(HL.body(13, .medium)).foregroundStyle(HL.dim) }
                         Button("Play without it") { checking = false; go("offline") }.font(HL.body(13, .bold)).foregroundStyle(HL.gold)
                     }
-                    if lowDisk { Text("Less than 25 GB free: the game keeps up to about 10 GB of memory on the disk, and it stops when space runs out. Free some space first.").font(HL.body(12, .medium)).foregroundStyle(HL.gold).multilineTextAlignment(.center) }
-                    if ProcessInfo.processInfo.isLowPowerModeEnabled { Text("Low Power Mode is on: iOS slows the phone, and the game will drop frames. Turn it off in Settings \u{2192} Battery for the best frame rate.").font(HL.body(12, .medium)).foregroundStyle(HL.gold).multilineTextAlignment(.center) }
-                    if ProcessInfo.processInfo.thermalState.rawValue >= 2 { Text("The phone is hot: the game will run slower until it cools. A short break helps.").font(HL.body(12, .medium)).foregroundStyle(HL.gold).multilineTextAlignment(.center) }
+                    if let rs = m.settings.first(where: { $0.env == "DM_RENDER_SCALE" }) { HLResolutionDial(m: m, scale: rs) }
                 }
-                .padding(.horizontal, 32).padding(.bottom, 12).frame(width: g.size.width * 0.40, height: g.size.height)
-                .background(RadialGradient(colors: [Color(red: 0.231, green: 0.176, blue: 0.098), HL.ground], center: .init(x: 0.5, y: 0.4), startRadius: 10, endRadius: 300))
-                panel("How it will run") {
-                    ScrollView {
-                        VStack(spacing: 6) {
-                            ForEach(playRows) { s in HLRow(title: s.label, value: value(s), chosen: false) { chosen = s.env; tab = .settings } }
-                            HLRow(title: "Storage", value: storage, chosen: false) {}
-                        }
-                        Text("Tap a row to change it in Settings.").font(HL.body(13, .medium)).foregroundStyle(HL.dim).padding(.top, 4)
+                .frame(width: min(330, g.size.width * 0.38)).frame(maxHeight: .infinity)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline) { label("QUICK SETTINGS"); Spacer(); Text("Tap to change").font(HL.body(11, .semibold)).foregroundStyle(HL.faint) }
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                        ForEach(quickTiles, id: \.title) { t in t }
                     }
+                    ForEach(playNotes, id: \.self) { HLBanner(text: $0) }
+                    Spacer(minLength: 0)
+                    HStack(spacing: 8) { ForEach(playChips, id: \.self) { HLChip(text: $0) } }.lineLimit(1).minimumScaleFactor(0.8)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
+            .padding(.top, 12).padding(.bottom, 10)
         }
     }
+    // The quick settings: those this game has, in this order. The frame rate tile switches 60 and 30 and keeps frame generation as it is; frame generation moves the
+    // frame rate mode (LauncherModel.linkFrameGeneration)
+    private var quickTiles: [HLTile] {
+        var out: [HLTile] = []
+        func lock(_ s: Setting) -> String? { m.fixed.contains(s.env) ? "Env file" : m.presetLocked(s) ? "Potato" : nil }
+        func toggle(_ env: String, _ title: String, _ what: String) {
+            guard let s = m.settings.first(where: { $0.env == env }) else { return }
+            let on = (m.values[s.env] ?? s.def) == s.onValue
+            out.append(HLTile(title: title, state: on ? "ON" : "OFF", what: what, on: on, locked: lock(s)) { m.values[s.env] = on ? s.offValue : s.onValue; UIImpactFeedbackGenerator(style: .light).impactOccurred() })
+        }
+        if let fm = m.settings.first(where: { $0.env == "DM_FRAME_MODE" }) {
+            let v = m.values[fm.env] ?? fm.def
+            let state = ["0": "60 fps", "1": "30 steady", "2": "30 + FG", "3": "60 + FG"][v] ?? v
+            let what = ["0": "The game at 60, as drawn. Sharp motion, more heat.", "1": "A steady 30 fps. The coolest and most even.",
+                        "2": "A steady 30, shown at 60 with in-between frames. Cool and very stable.", "3": "The game at 60, shown at 120 with in-between frames. Smoothest; needs a cool phone."][v] ?? ""
+            let next = ["0": "1", "1": "0", "2": "3", "3": "2"][v] ?? v
+            out.append(HLTile(title: "Frame rate", state: state, what: what, on: true, locked: lock(fm)) {
+                if fm.options?.contains(where: { $0[0] == next }) ?? false { m.values[fm.env] = next; UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+            })
+        }
+        toggle("DM_FRAMEGEN", "Frame generation", "Makes in-between frames, so the picture moves twice as smoothly. Turning it on or off changes the frame rate mode.")
+        toggle("DM_COOL", "Cool mode", "Half the 3D resolution and smaller in-between frames: less heat, longer battery.")
+        toggle("DM_PRESET", "Potato mode", "The lightest it can run: 25 % resolution and memory savers, for older iPhones.")
+        toggle("DM_WIDE_VIEW", "Wide view", "Fills the whole screen with more of the world; the HUD stays in the middle.")
+        toggle("DM_MIC", "Ocarina mic", "Play the ocarina by humming or whistling the notes.")
+        return out
+    }
+    private var playNotes: [String] {
+        var n: [String] = []
+        if lowDisk { n.append("Less than 25 GB free: the game keeps up to about 10 GB of memory on the disk, and it stops when space runs out. Free some space first.") }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled { n.append("Low Power Mode is on: iOS slows the phone, and the game will drop frames. Turn it off in Settings \u{2192} Battery.") }
+        switch ProcessInfo.processInfo.thermalState.rawValue {
+        case 2...: n.append("The phone is hot: the game will run slower until it cools. A short break helps.")
+        case 1: n.append("The phone is warm. 30 fps + frame generation runs steadier until it cools.")
+        default: break
+        }
+        return n
+    }
+    private var playChips: [String] {
+        var c: [String] = []
+        if let s = m.settings.first(where: { $0.env == "DM_NDVE_LITE" }) { c.append("Light movies " + ((m.values[s.env] ?? s.def) == s.onValue ? "on" : "off")) }
+        if let s = m.settings.first(where: { $0.env == "DM_PAD_THEME" }) { c.append("Touch: " + value(s)) }
+        c.append(storage + " on the phone")
+        return c
+    }
 
-    // Settings: every setting by section on the left, the chosen one's explanation and control on the right
+    // Settings: the sections as tabs over the list on the left; the chosen setting's explanation and control on the right
     private var settingsTab: some View {
-        GeometryReader { g in
-            HStack(spacing: 0) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(m.sections, id: \.self) { section in
-                            let rows = m.rows(in: section)
-                            if !rows.isEmpty {
-                                Text(section).font(HL.serif(17)).foregroundStyle(HL.gold).padding(.top, 6)
-                                ForEach(rows) { s in HLRow(title: s.label, value: value(s), chosen: chosen == s.env) { chosen = s.env } }
+        let current = m.sections.contains(section) ? section : (m.sections.first ?? "")
+        return GeometryReader { g in
+            HStack(spacing: 16) {
+                VStack(spacing: 8) {
+                    HStack(spacing: 0) {
+                        ForEach(m.sections, id: \.self) { sec in
+                            Button { section = sec; if let f = m.rows(in: sec).first { chosen = f.env } } label: {
+                                Text(sec).font(HL.body(13, .heavy)).foregroundStyle(sec == current ? HL.ground : HL.muted).frame(maxWidth: .infinity).frame(height: 32)
+                                    .background(sec == current ? AnyShapeStyle(LinearGradient(colors: [Color(red: 0.914, green: 0.776, blue: 0.416), Color(red: 0.773, green: 0.604, blue: 0.204)], startPoint: .top, endPoint: .bottom)) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: 7))
+                                    .contentShape(Rectangle())
+                            }.buttonStyle(.plain).accessibilityAddTraits(sec == current ? .isSelected : [])
+                        }
+                    }
+                    .padding(3).background(HL.panel, in: RoundedRectangle(cornerRadius: 10)).overlay(RoundedRectangle(cornerRadius: 10).stroke(HL.edge, lineWidth: 1))
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            ForEach(m.rows(in: current)) { s in
+                                HLRow(title: s.label, value: m.presetLocked(s) ? "Potato mode" : value(s), chosen: chosen == s.env, action: { chosen = s.env }, valueColor: m.presetLocked(s) ? HL.gold : nil)
                             }
                         }
-                    }.padding(.horizontal, 18).padding(.vertical, 8)
-                }.frame(width: g.size.width * 0.46)
+                    }
+                }
+                .frame(width: min(370, g.size.width * 0.44))
                 if let s = m.settings.first(where: { $0.env == chosen }) ?? m.settings.first {
-                    panel(s.label) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .firstTextBaseline) { Text(s.label).font(HL.serif(22)).foregroundStyle(.white); Spacer(); label(s.sectionTitle.uppercased()) }
                         ScrollView {
-                            VStack(spacing: 8) {
+                            VStack(alignment: .leading, spacing: 10) {
                                 let byPreset = m.presetLocked(s), locked = m.fixed.contains(s.env) || byPreset
-                                if !s.note.isEmpty { Text(s.note).font(HL.body(13, .medium)).foregroundStyle(HL.text).multilineTextAlignment(.center) }
+                                if !s.note.isEmpty { Text(s.note).font(HL.body(13, .medium)).foregroundStyle(HL.text).lineSpacing(2).fixedSize(horizontal: false, vertical: true) }
                                 if locked { Text(byPreset && !m.fixed.contains(s.env) ? "Set by Potato mode" : m.fromLaunch.contains(s.env) ? "Set at launch" : "Set by an env file").font(HL.body(13, .bold)).foregroundStyle(HL.gold) }
                                 control(s).disabled(locked).opacity(locked ? 0.5 : 1)
                             }
                         }
                     }
+                    .padding(.horizontal, 20).padding(.vertical, 14).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .background(HL.panel.opacity(0.82), in: RoundedRectangle(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(HL.line, lineWidth: 1))
                 }
             }
+            .padding(.top, 12).padding(.bottom, 10)
         }
     }
     @ViewBuilder private func control(_ s: Setting) -> some View {
@@ -404,33 +546,63 @@ private struct LauncherView: View {
             }
         case "range":
             let b = Binding<Double>(get: { Double(m.values[s.env] ?? s.def) ?? s.max ?? 1 }, set: { m.values[s.env] = String(format: "%.2f", $0) })
-            VStack(spacing: 6) {
-                Text(m.rangeLabel(s, b.wrappedValue)).font(HL.body(17, .heavy)).foregroundStyle(.white).monospacedDigit()
+            VStack(alignment: .leading, spacing: 6) {
+                Text(m.rangeLabel(s, b.wrappedValue)).font(HL.body(19, .heavy)).foregroundStyle(HL.cream).monospacedDigit()
                 Slider(value: b, in: (s.min ?? 0)...(s.max ?? 1), step: s.step ?? 0.05).tint(HL.gold).accessibilityLabel(s.label)
+                HStack { Text(m.rangeLabel(s, s.min ?? 0)).lineLimit(1); Spacer(); Text(m.rangeLabel(s, s.max ?? 1)).lineLimit(1) }.font(HL.body(10.5, .bold)).foregroundStyle(HL.faint).minimumScaleFactor(0.7)
             }
+            .padding(14).background(HL.ground, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(HL.edge, lineWidth: 1))
         default:
-            let on = (m.values[s.env] ?? s.def) == s.onValue
-            HStack(spacing: 8) {
-                HLRow(title: "On", value: on ? "Selected" : "", chosen: on) { m.values[s.env] = s.onValue }
-                HLRow(title: "Off", value: on ? "" : "Selected", chosen: !on) { m.values[s.env] = s.offValue }
-            }
+            let on = Binding<Bool>(get: { (m.values[s.env] ?? s.def) == s.onValue }, set: { m.values[s.env] = $0 ? s.onValue : s.offValue })
+            Toggle(isOn: on) { Text(on.wrappedValue ? "On" : "Off").font(HL.body(15, .heavy)).foregroundStyle(on.wrappedValue ? HL.gold : HL.muted) }
+                .tint(HL.gold).padding(.horizontal, 14).frame(minHeight: 48)
+                .background(HL.ground, in: RoundedRectangle(cornerRadius: 12)).overlay(RoundedRectangle(cornerRadius: 12).stroke(HL.edge, lineWidth: 1))
+                .accessibilityLabel(s.label)
         }
     }
 
-    // Extras
+    // Extras: cards that say what each does. Inventory manager, Import and the game log act at once; the others open their page
     private var extrasTab: some View {
-        let items: [(String, String, String)] = [("saves", "Export saves", ""), ("import", "Import a save", ""), ("log", "Export game log", ""), ("cloud", "Cloud saves", ""),
-                                                   ("editor", "Inventory manager", ""),
-                                                   ("cheats", "Cheats", cheatNames().isEmpty ? "No file" : "\(cheatsOn.intersection(cheatNames()).count) on"),
-                                                   ("reset", "Reset to tested defaults", m.changed ? "" : "Nothing changed"), ("credits", "Credits", "")]
-        return GeometryReader { g in
-            HStack(spacing: 0) {
-                ScrollView {
-                    VStack(spacing: 6) { ForEach(items, id: \.0) { it in HLRow(title: it.1, value: it.2, chosen: extra == it.0) { extra = it.0; note = "" } } }
-                        .padding(.horizontal, 18).padding(.vertical, 8)
-                }.frame(width: g.size.width * 0.40)
-                panel(items.first { $0.0 == extra }?.1 ?? "Extras") { ScrollView { extraDetail } }
-            }
+        let cheats = cheatNames()
+        let saves: [(String, String, String, String)] = [("editor", "Inventory manager", "Rupees, hearts, items, bottles and more, by OOT SW2SE. A backup is made first.", ""),
+                                                         ("saves", "Export saves", "Share your save folder, and back saves up at each start.", autoBackupOn ? "Backups on" : ""),
+                                                         ("import", "Import a save", "Replace the saves with a folder. Yours move to save-backups first.", ""),
+                                                         ("cloud", "Cloud saves", "Keep the save in step with the Mac app through iCloud Drive.", "")]
+        let more: [(String, String, String, String)] = [("log", "Export game log", "The last session's log, to share when reporting a problem.", ""),
+                                                        ("cheats", "Cheats", "Turn on cheats from the files in the cheats folder.", cheats.isEmpty ? "No file" : "\(cheatsOn.intersection(cheats).count) on"),
+                                                        ("reset", "Reset to tested defaults", "Every setting back to how HookLink \(version) was tested.", m.changed ? "" : "Nothing changed"),
+                                                        ("credits", "Credits", "Everyone whose work is in this build.", "")]
+        func card(_ c: (String, String, String, String)) -> some View {
+            Button { openExtra(c.0, c.1) } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline) { Text(c.1).font(HL.body(13.5, .heavy)).foregroundStyle(HL.cream).lineLimit(1).minimumScaleFactor(0.8); Spacer(minLength: 4); Text(c.3).font(HL.body(10.5, .heavy)).foregroundStyle(HL.faint).lineLimit(1) }
+                    Text(c.2).font(HL.body(11, .medium)).foregroundStyle(HL.soft).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, minHeight: 88, maxHeight: 96, alignment: .topLeading)
+                .background(c.0 == "editor" ? AnyShapeStyle(LinearGradient(colors: [HL.tabOn, Color(red: 0.173, green: 0.133, blue: 0.078)], startPoint: .top, endPoint: .bottom)) : AnyShapeStyle(HL.panel.opacity(0.72)), in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(c.0 == "editor" ? HL.gold : HL.edge, lineWidth: c.0 == "editor" ? 1.5 : 1))
+                .contentShape(RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain)
+        }
+        let cols = Array(repeating: GridItem(.flexible(), spacing: 8), count: 4)
+        return VStack(alignment: .leading, spacing: 10) {
+            label("SAVES")
+            LazyVGrid(columns: cols, spacing: 8) { ForEach(saves, id: \.0) { card($0) } }
+            label("MORE").padding(.top, 4)
+            LazyVGrid(columns: cols, spacing: 8) { ForEach(more, id: \.0) { card($0) } }
+            if !note.isEmpty { Text(note).font(HL.body(13, .bold)).foregroundStyle(HL.gold) }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .padding(.vertical, 10)
+    }
+    private func openExtra(_ id: String, _ title: String) {
+        note = ""; extra = id
+        switch id {
+        case "editor": editing = true
+        case "import": picking = true
+        case "log": exportLog()
+        default: detail = ExtraSheet(id: id, title: title)
         }
     }
     private func words(_ t: String) -> some View { Text(t).font(HL.body(13, .medium)).foregroundStyle(HL.text).multilineTextAlignment(.center).frame(maxWidth: .infinity) }

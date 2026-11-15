@@ -41,7 +41,24 @@ final class LauncherModel: ObservableObject {
     let fixed: Set<String>      // set by an env file or by the launch environment: shown, not changed
     let fromLaunch: Set<String>   // of those, the ones the launch environment set (a front end's launch overrides, Xcode; DM_ENV_LAUNCH_KEYS from launcher.c or main.m)
     let ignoreSaved: Bool   // DM_SAVED_CHOICES=0: start from the defaults, and leave the saved choices as they are
-    @Published var values: [String: String] = [:]
+    @Published var values: [String: String] = [:] { didSet { linkFrameGeneration(oldValue) } }
+    private var linking = false
+    // HookLink X1: frame generation and the frame rate mode are one choice (DM_FRAME_MODE 0 = 60, 1 = steady 30, 2 = 30 + frame generation, 3 = 60 + frame generation). Turning frame
+    // generation on or off moves the mode between 60 and 60 + frame generation, or steady 30 and 30 + frame generation; picking a mode sets frame generation to match. Only after init:
+    // property observers do not run there, so the saved choices load as they were
+    private func linkFrameGeneration(_ old: [String: String]) {
+        guard !linking, let fm = settings.first(where: { $0.env == "DM_FRAME_MODE" }), let fg = settings.first(where: { $0.env == "DM_FRAMEGEN" }) else { return }
+        linking = true; defer { linking = false }
+        let mode = values[fm.env] ?? fm.def, gen = values[fg.env] ?? fg.def
+        if gen != (old[fg.env] ?? fg.def) {
+            let on = gen == fg.onValue
+            let want = on ? (mode == "0" ? "3" : mode == "1" ? "2" : mode) : (mode == "3" ? "0" : mode == "2" ? "1" : mode)
+            if want != mode, fm.options?.contains(where: { $0[0] == want }) ?? false { values[fm.env] = want }
+        } else if mode != (old[fm.env] ?? fm.def) {
+            let want = mode == "2" || mode == "3" ? fg.onValue : fg.offValue
+            if gen != want { values[fg.env] = want }
+        }
+    }
 
     private let defaults: UserDefaults
 
@@ -57,6 +74,10 @@ final class LauncherModel: ObservableObject {
             if fixed.contains(s.env), let v = env[s.env] { values[s.env] = v; continue }
             let saved = ignoreSaved ? nil : defaults.object(forKey: "launcher." + s.env) as? String   // a string, as launcher.c reads it: not string(forKey:), which turns a number into one
             values[s.env] = saved.flatMap { s.accepts($0) ? $0 : nil } ?? s.def   // a saved choice the game no longer offers: its default
+        }
+        // Frame generation follows the frame rate mode from the start (the mode decides the game's frame generation, main.c dm_frame_mode_apply)
+        if let fm = settings.first(where: { $0.env == "DM_FRAME_MODE" }), let fg = settings.first(where: { $0.env == "DM_FRAMEGEN" }), !fixed.contains(fg.env) {
+            let mode = values[fm.env] ?? fm.def; values[fg.env] = mode == "2" || mode == "3" ? fg.onValue : fg.offValue
         }
     }
 
@@ -118,8 +139,13 @@ final class LauncherModel: ObservableObject {
     // A value an env file or the launch fixed stays
     func choose(_ s: Setting, _ v: String) {
         guard !fixed.contains(s.env), s.accepts(v) else { return }
+        let before = values
         values[s.env] = v; store(s, v); setenv(s.env, v, 1)
         fputs("launcher: \(s.env)=\(v) (in-game menu)\n", stderr)
+        for o in settings where o.env != s.env && !fixed.contains(o.env) {   // what the choice moved with it (frame generation and the frame rate mode: linkFrameGeneration)
+            guard let nv = values[o.env], nv != before[o.env] else { continue }
+            store(o, nv); setenv(o.env, nv, 1); fputs("launcher: \(o.env)=\(nv) (follows \(s.env))\n", stderr)
+        }
     }
 
     // DM_LAUNCHER=0: no screen, but the saved choices still apply (only DM_SAVED_CHOICES=0 ignores them); nothing is written
