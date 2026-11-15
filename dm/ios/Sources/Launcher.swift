@@ -121,6 +121,57 @@ private struct Divider2: View {
         HStack(spacing: 10) { Rectangle().fill(HL.trim).frame(height: 1); Rectangle().fill(HL.gold).frame(width: 7, height: 7).rotationEffect(.degrees(45)); Rectangle().fill(HL.trim).frame(height: 1) }
     }
 }
+/// Resolution: one dial over the render scale and Cool mode, from kid-with-sword-remake's FF11 Resolution Scale dial, in HookLink's look. Its steps: Coolest (Cool mode: the 3D picture
+/// at 50 % and smaller in-between frames), Cool (50 %), Balanced (66.7 %, 1280 × 720 handheld, the default), Sharp (80 %), Sharpest (100 %); a render scale between steps shows at the
+/// nearest. Locked while Potato mode or an env file sets the render scale. Without Cool mode in the list it starts at Cool; without a render scale it is not drawn
+private struct HLResolutionDial: View {
+    @ObservedObject var m: LauncherModel
+    let scale: Setting
+    private static let steps: [(String, Double)] = [("Coolest", 0.5), ("Cool", 0.5), ("Balanced", 0.667), ("Sharp", 0.8), ("Sharpest", 1.0)]
+    private var cool: Setting? { m.settings.first { $0.env == "DM_COOL" } }
+    private var lo: Int { cool == nil ? 1 : 0 }
+    private var locked: Bool { m.fixed.contains(scale.env) || m.presetLocked(scale) }
+    private var level: Int {
+        if let c = cool, (m.values[c.env] ?? c.def) == c.onValue { return 0 }
+        let v = Double(m.values[scale.env] ?? scale.def) ?? 0.667
+        return (1...4).min { abs(Self.steps[$0].1 - v) < abs(Self.steps[$1].1 - v) } ?? 2
+    }
+    private func set(_ l: Int) {
+        let l = max(lo, min(4, l)); guard !locked, l != level else { return }
+        if let c = cool { m.values[c.env] = l == 0 ? c.onValue : c.offValue }
+        let v = min(max(Self.steps[l].1, scale.min ?? 0), scale.max ?? 1)
+        m.values[scale.env] = String(format: "%.2f", v)
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Text("Resolution").font(HL.body(13, .bold)).foregroundStyle(HL.dim)
+                Spacer()
+                Text(locked ? "Set by Potato mode" : Self.steps[level].0).font(HL.body(13, .heavy)).foregroundStyle(locked ? HL.gold : HL.text)
+            }
+            GeometryReader { g in
+                let f = CGFloat(level - lo) / CGFloat(4 - lo), w = g.size.width
+                ZStack(alignment: .leading) {
+                    Capsule().fill(HL.panel).overlay(Capsule().stroke(HL.line, lineWidth: 1)).frame(height: 8)
+                    Capsule().fill(LinearGradient(colors: [Color(red: 0.55, green: 0.75, blue: 0.95), HL.gold], startPoint: .leading, endPoint: .trailing)).frame(width: max(8, w * f), height: 8)
+                    Rectangle().fill(HL.gold).frame(width: 14, height: 14).rotationEffect(.degrees(45)).overlay(Rectangle().stroke(Color.white, lineWidth: 1.5).rotationEffect(.degrees(45)))
+                        .shadow(color: HL.gold.opacity(0.6), radius: 4).offset(x: (w - 14) * f)
+                }
+                .frame(maxHeight: .infinity).contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0).onChanged { v in set(lo + Int((v.location.x / max(w, 1) * CGFloat(4 - lo)).rounded())) })
+            }
+            .frame(height: 22)
+            Text(m.rangeLabel(scale, Double(m.values[scale.env] ?? scale.def) ?? 0.667)).font(HL.body(12, .medium)).foregroundStyle(HL.dim).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .opacity(locked ? 0.6 : 1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Resolution")
+        .accessibilityValue(locked ? "Set by Potato mode" : Self.steps[level].0)
+        .accessibilityAdjustableAction { d in set(level + (d == .increment ? 1 : -1)) }
+    }
+}
+
 /// One row of a list: its name on the left, its value on the right, outlined when chosen
 private struct HLRow: View {
     let title: String, value: String, chosen: Bool, action: () -> Void
@@ -284,6 +335,7 @@ private struct LauncherView: View {
                     }
                     Text((info("CFBundleDisplayName") as? String) ?? "Game").font(HL.serif(25)).foregroundStyle(.white).multilineTextAlignment(.center).lineLimit(3).minimumScaleFactor(0.7)
                     Text("Version \((info("CFBundleShortVersionString") as? String) ?? "")  •  Ready to play").font(HL.body(13, .medium)).foregroundStyle(HL.dim)
+                    if let rs = m.settings.first(where: { $0.env == "DM_RENDER_SCALE" }) { HLResolutionDial(m: m, scale: rs).padding(.vertical, 2) }
                     Button(action: { applyCheats(); autoBackup(); start() }) {
                         Text("Play").font(HL.body(22, .heavy)).foregroundStyle(HL.ground).frame(maxWidth: .infinity).frame(height: 54)
                             .background(LinearGradient(colors: [Color(red: 0.914, green: 0.776, blue: 0.416), Color(red: 0.773, green: 0.604, blue: 0.204)], startPoint: .top, endPoint: .bottom))
