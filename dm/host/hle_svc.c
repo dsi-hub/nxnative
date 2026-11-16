@@ -178,6 +178,9 @@ static void *guest_file_thread(void *arg) {
             if (room < g_gf_min_free / 2.0 || imp - need < (double)g_gf_min_free) {
                 LOG("[RED] [mem] guest file: %.1f GB free on its disk (%.1f with what the system can purge), %.1f GB of it still to be taken by dirty pages: under %.1f GB left, stopping the game",
                     avail / G, imp / G, need / G, g_gf_min_free / G);
+                // HookLink X1: the player sees this stop as a crash, so the launcher says why at the next start (Launcher.swift playNotes, dm.stopped.storage: the GB free then)
+                { double gb = avail / G; CFNumberRef v = CFNumberCreate(NULL, kCFNumberDoubleType, &gb);
+                  if (v) { CFPreferencesSetAppValue(CFSTR("dm.stopped.storage"), v, kCFPreferencesCurrentApplication); CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication); CFRelease(v); } }
                 _exit(87);
             }
             if (!purge_told) { purge_told = 1; LOG("[mem] guest file: %.1f GB free on its disk, less %.1f GB for dirty pages, is under %.1f GB, but %.1f GB with what the system can purge: going on (stopping under %.1f GB of f_bavail)",
