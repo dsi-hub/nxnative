@@ -82,6 +82,10 @@ static size_t g_gf_chunk;          // each file's size; the last one holds the r
 static uint64_t g_gf_min_free;     // DM_GUEST_FILE_MIN_FREE in bytes: the free space on the files' disk, less what the dirty pages may still take, under which the game is stopped; 0 = never
 static int g_gf_punch = 1;         // DM_GUEST_FILE_PUNCH=0: what the game gives back keeps its disk blocks (only PROT_NONE), as before
 static _Atomic uint64_t g_gf_punched;   // bytes given back as holes (guest_file_punch)
+// HookLink X1: per host page of the block, what the disk guard knows of its block (guest_file_unbacked): GF_SEEN, dirty at an earlier count; GF_BACKED, written out since, so it has a
+// block and its next writes take none. guest_file_punch clears its pages (their blocks are gone). Allocated by guest_file_thread; 0 before
+enum { GF_SEEN = 1, GF_BACKED = 2 };
+static uint8_t *_Atomic g_gf_state;
 
 // Give the files' blocks under [lo, hi) (whole host pages, inside the block) back to the disk with F_PUNCHHOLE. Over a mapped range it also drops the pages, written out or still dirty, and they read 0
 // again (measured on the Mac: a 64 MB shared mapping, half written out: blocks 32 MB → 16 MB after punching a written and a dirty quarter, both read 0, and a later msync writes nothing for them). A
@@ -92,6 +96,8 @@ static void guest_file_punch(uintptr_t lo, uintptr_t hi) {
     while (lo < hi) {
         size_t off = lo - (uintptr_t)g_as, k = off / g_gf_chunk, in = off - k * g_gf_chunk, fsz = (int)k == g_gf_n - 1 ? g_reserve - k * g_gf_chunk : g_gf_chunk;
         size_t len = hi - lo < fsz - in ? hi - lo : fsz - in;
+        { uint8_t *st = atomic_load(&g_gf_state); size_t pg = (size_t)getpagesize();   // before the punch: a count that sees the page clean after it cannot take it as written out
+          if (st) for (size_t i = off / pg, e = (off + len) / pg; i < e; i++) __atomic_store_n(&st[i], 0, __ATOMIC_SEQ_CST); }
         fpunchhole_t ph = {0}; ph.fp_offset = (off_t)in; ph.fp_length = (off_t)len;
         if (!fcntl(g_gf_tab[k], F_PUNCHHOLE, &ph)) atomic_fetch_add(&g_gf_punched, len);
         else { static _Atomic int nred; if (atomic_fetch_add(&nred, 1) < 4) LOG("[RED] [mem] guest file: F_PUNCHHOLE file %zu +%#zx+%#zx failed (errno %d): the range keeps its disk blocks", k, in, len, errno); }
@@ -113,6 +119,22 @@ static double guest_file_dirty(char *vec, size_t pg) {
     }
     for (size_t i = 0; i < np; i++) all += (vec[i] & MINCORE_MODIFIED) != 0;
     return (double)all * pg;
+}
+// HookLink X1: of the dirty pages guest_file_dirty found (vec), the bytes that may still take a new block: those not known to have one. A page dirty at one count and not dirty at a
+// later one was written out (the kernel cannot drop a dirty file page, and a punched one is cleared in st first), so it has its block: rewriting it takes none. The guard counted every
+// dirty page whole, and on an iPhone 17 Pro it stopped Hyrule Field at 5.1 GB free, 4.2 GB dirty, though the game rewrites much the same memory each frame. A page dirty at both counts
+// stays unknown, as it may never have been written. The regions guest_file_dirty asks only grow, so a page outside them was never dirty. On the Mac, which writes nothing back, no
+// page becomes known and this is the dirty count as before
+static double guest_file_unbacked(const char *vec, uint8_t *st, size_t np, size_t pg) {
+    size_t n = 0;
+    for (size_t i = 0; i < np; i++) {
+        uint8_t s = __atomic_load_n(&st[i], __ATOMIC_SEQ_CST);
+        if (vec[i] & MINCORE_MODIFIED) {
+            if (!(s & GF_BACKED)) n++;
+            if (!(s & GF_SEEN)) __atomic_compare_exchange_n(&st[i], &s, (uint8_t)(s | GF_SEEN), 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+        } else if ((s & GF_SEEN) && !(s & GF_BACKED)) __atomic_compare_exchange_n(&st[i], &s, (uint8_t)GF_BACKED, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);   // fails if a punch cleared it
+    }
+    return (double)n * pg;
 }
 // DM_GUEST_FILE_SCAN=1 (a diagnostic): every 30 s, the dirty pages by region and how many of them read all 0 (read with pread from the files, so a PROT_NONE page needs no access): a zero page
 // written by the game or the host takes a block for nothing
@@ -159,8 +181,9 @@ static double guest_file_free_important(void) {
 // Every 10th second one line, [RED] with under a gigabyte to the minimum: what the disk cost so far and the footprint's parts
 static void *guest_file_thread(void *arg) {
     (void)arg; const double G = 1073741824.0; size_t pg = (size_t)getpagesize(); char *vec = malloc(g_reserve / pg + 1);
+    uint8_t *gst = calloc(g_reserve / pg + 1, 1); atomic_store(&g_gf_state, gst);   // guest_file_unbacked; without it every dirty page counts, as before
     const char *sc = getenv("DM_GUEST_FILE_SCAN"); int scan = sc && atoi(sc) > 0, purge_told = 0;
-    double imp = -1, dirty = -1, count_ms = 0; unsigned imp_at = 0;
+    double imp = -1, dirty = -1, unbacked = -1, count_ms = 0; unsigned imp_at = 0;
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
     for (unsigned sec = 1;; sec++) {
         sleep(1);
@@ -169,15 +192,16 @@ static void *guest_file_thread(void *arg) {
         if (sec % 10 == 1) {   // every 10 s, from the first second (a burst of new dirty pages between two counts is what the margin's other half is for)
             clock_gettime(CLOCK_MONOTONIC, &t0);
             dirty = vec ? guest_file_dirty(vec, pg) : -1;
+            unbacked = dirty >= 0 && gst ? guest_file_unbacked(vec, gst, g_reserve / pg, pg) : dirty;
             clock_gettime(CLOCK_MONOTONIC, &t1); count_ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
         }
-        double need = dirty > 0 ? dirty : 0, held = 0;
+        double need = unbacked > 0 ? unbacked : 0, held = 0;
         int fs_ok = !fstatfs(g_gf_tab[0], &fs); double avail = fs_ok ? (double)fs.f_bavail * fs.f_bsize : -1, room = avail - need;
         if (fs_ok && g_gf_min_free && room < (double)g_gf_min_free) {
             if (imp < 0 || sec - imp_at >= 10) { imp = guest_file_free_important(); imp_at = sec; }
             if (room < g_gf_min_free / 2.0 || imp - need < (double)g_gf_min_free) {
-                LOG("[RED] [mem] guest file: %.1f GB free on its disk (%.1f with what the system can purge), %.1f GB of it still to be taken by dirty pages: under %.1f GB left, stopping the game",
-                    avail / G, imp / G, need / G, g_gf_min_free / G);
+                LOG("[RED] [mem] guest file: %.1f GB free on its disk (%.1f with what the system can purge), %.1f GB of it still to be taken by dirty pages (%.1f GB dirty, the rest written out before): under %.1f GB left, stopping the game",
+                    avail / G, imp / G, need / G, dirty / G, g_gf_min_free / G);
                 // HookLink X1: the player sees this stop as a crash, so the launcher says why at the next start (Launcher.swift playNotes, dm.stopped.storage: the GB free then)
                 { double gb = avail / G; CFNumberRef v = CFNumberCreate(NULL, kCFNumberDoubleType, &gb);
                   if (v) { CFPreferencesSetAppValue(CFSTR("dm.stopped.storage"), v, kCFPreferencesCurrentApplication); CFPreferencesAppSynchronize(kCFPreferencesCurrentApplication); CFRelease(v); } }
@@ -192,9 +216,9 @@ static void *guest_file_thread(void *arg) {
         for (int i = 0; i < g_gf_n; i++) if (!fstat(g_gf_tab[i], &st)) held += st.st_blocks * 512.0;
         int ru_ok = !proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t *)&ru);
         if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) != KERN_SUCCESS) memset(&vi, 0, sizeof vi);
-        LOG("%s[mem] guest file: %.2f GB allocated on disk, %.2f GB dirty in memory (%.0f ms to count, every 10 s), %.2f GB given back as holes; process read %.2f GB, %llu page-ins, logical writes %.2f GB; "
+        LOG("%s[mem] guest file: %.2f GB allocated on disk, %.2f GB dirty in memory (%.2f GB of it with no block yet; %.0f ms to count, every 10 s), %.2f GB given back as holes; process read %.2f GB, %llu page-ins, logical writes %.2f GB; "
             "footprint %.2f GB (internal %.2f, compressed %.2f, peak so far %.2f), file pages mapped (external) %.2f GB; %.1f GB free on its disk (%.1f with what the system can purge)",
-            g_gf_min_free && fs_ok && (imp > avail ? imp : avail) - need < g_gf_min_free + G ? "[RED] " : "", held / G, dirty / G, count_ms, atomic_load(&g_gf_punched) / G,
+            g_gf_min_free && fs_ok && (imp > avail ? imp : avail) - need < g_gf_min_free + G ? "[RED] " : "", held / G, dirty / G, unbacked / G, count_ms, atomic_load(&g_gf_punched) / G,
             ru_ok ? ru.ri_diskio_bytesread / G : -1, ru_ok ? (unsigned long long)ru.ri_pageins : 0ull,
             ru_ok ? ru.ri_logical_writes / G : -1, vi.phys_footprint / G, vi.internal / G, vi.compressed / G, ru_ok ? ru.ri_lifetime_max_phys_footprint / G : -1, vi.external / G, avail / G, imp / G);
     }
@@ -337,6 +361,8 @@ static int mem_cutoff_hit(double *held_gb, double *room_gb) {
         if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) == KERN_SUCCESS) { held = (double)vi.phys_footprint; if (cut > 0 && held > (double)cut) h = 1; }
 #if TARGET_OS_IPHONE
         uint64_t left = os_proc_available_memory(); room = (double)left; if (min_room > 0 && left && left < (uint64_t)min_room) h = 1;
+#else
+        (void)min_room;   // iOS only: the Mac's -Werror test build (t_svc_memory) stopped on it
 #endif
         atomic_store(&hit, h);
     }

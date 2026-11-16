@@ -489,6 +489,22 @@ static void release_fallback(void) {
     fail_mmap = 0;
 }
 // A heap given back reads 0 when it grows again: a fresh mapping in anonymous memory, and SetHeapSize's zeroing with the guest in files (DM_GUEST_FILE), where the pages keep their bytes
+// HookLink X1: the disk guard counts only the dirty pages that may still take a block (guest_file_unbacked): one dirty at a count and not at a later one was written out, so its next
+// writes take none; a page dirty at both counts stays unknown; a punch (its state cleared) makes it unknown again
+static void file_unbacked(void) {
+    enum { M = MINCORE_INCORE | MINCORE_MODIFIED, C = MINCORE_INCORE }; const size_t pg = 16384;
+    uint8_t st[5] = {0};
+    char v1[5] = {M, M, C, 0, 0};    // pages 0 and 1 dirty, none known
+    assert(guest_file_unbacked(v1, st, 5, pg) == 2.0 * pg && st[0] == GF_SEEN && st[1] == GF_SEEN && !st[2] && !st[3]);
+    char v2[5] = {C, M, M, 0, 0};    // page 0 written out; 1 still dirty (unknown); 2 newly dirty
+    assert(guest_file_unbacked(v2, st, 5, pg) == 2.0 * pg && st[0] == GF_BACKED);
+    char v3[5] = {M, 0, M, 0, M};    // page 0 dirty again: it has its block; 1 written out and dropped from memory; 2 still dirty; 4 newly dirty
+    assert(guest_file_unbacked(v3, st, 5, pg) == 2.0 * pg && (st[0] & GF_BACKED) && st[1] == GF_BACKED);
+    char v4[5] = {M, M, 0, 0, 0};    // 0 and 1 rewritten: no new block; 2 written out
+    assert(guest_file_unbacked(v4, st, 5, pg) == 0 && (st[2] & GF_BACKED));
+    st[0] = 0;                       // page 0 punched (guest_file_punch): its block is gone
+    assert(guest_file_unbacked(v4, st, 5, pg) == 1.0 * pg && st[0] == GF_SEEN);
+}
 // The rule that puts the guest in files: the switch when it is set, otherwise a pool and the host's margin over a known room to the memory limit
 static void file_rule(void) {
     unsetenv("DM_GUEST_FILE_HOST");
@@ -610,7 +626,7 @@ int main(int argc, char **argv) {
     if (!getenv("DM_ALIAS_SIZE")) assert(info(I_AliasSize) == SWITCH_ALIAS);   // the Mac's alias region is a Switch's, whatever the profile can give an iPhone; DM_ALIAS_SIZE=<mem_alias> runs these tests on an iPhone's
 #endif
     layout_order();
-    lazy_commit(); alias_lifecycle(); device_shared_refused(); ownership(); module_sources(); module_back_patch(); failures(); release_fallback(); file_rule(); file_sweep(); heap_regrow(); concurrency(); fragmented_queries();
+    lazy_commit(); alias_lifecycle(); device_shared_refused(); ownership(); module_sources(); module_back_patch(); failures(); release_fallback(); file_rule(); file_unbacked(); file_sweep(); heap_regrow(); concurrency(); fragmented_queries();
     guest_helper();
     if (!DM_GAME_MEM_MAP_LIMIT) metadata_limit();
 #ifdef TEST_REAL_DIRTY
