@@ -592,7 +592,14 @@ static int res_pending(void) { pthread_mutex_lock(&g_res_mu); int n = g_res_qn !
 static uint64_t ws_bytes(void) { static uint64_t ws; if (!ws) { const char *e = getenv("DM_NVN_WS_MB"); ws = e && atoll(e) > 0 ? (uint64_t)atoll(e) << 20 : g_dev.recommendedMaxWorkingSetSize; } return ws; }
 // HookLink (nxnative PR #1455, on nvn_owner.m since the 1.9 merge): above ALIAS_HI percent of the working set, shared textures no live object resolved to for ALIAS_RETIRE submissions
 // are retired, the longest idle first, until the residency set is down to ALIAS_LO (own_alias_retire_idle_locked says why). DM_NVN_ALIAS_RETIRE=0 turns it off
-enum { ALIAS_RETIRE = 4 * ALIAS_IDLE, ALIAS_RETIRE_EVERY = ALIAS_IDLE, ALIAS_HI = 85, ALIAS_LO = 75 };
+// HookLink VX1rc_5: on an iPhone 70 / 60. The residency set is wired memory, and the phone's guest memory and the system share what is left: VX1rc_4 on an iPhone 18 Pro Max (12 GB, an
+// 8,192 MB working set) was ended by iOS with 9.0 GB wired and 120 MB free (JetsamEvent 2026-11-17 08:46), its set at 6.9-7.1 GB, under 85 % (6,963 MB) until the end. The Mac keeps 85 / 75
+#if TARGET_OS_IPHONE
+enum { ALIAS_HI = 70, ALIAS_LO = 60 };
+#else
+enum { ALIAS_HI = 85, ALIAS_LO = 75 };
+#endif
+enum { ALIAS_RETIRE = 4 * ALIAS_IDLE, ALIAS_RETIRE_EVERY = ALIAS_IDLE };
 static void alias_retire_idle(void) {
     static uint64_t last; uint64_t f = g_fence;
     if (f - last < ALIAS_RETIRE_EVERY) return;
@@ -604,7 +611,7 @@ static void alias_retire_idle(void) {
     // DM_NVN_ALIAS_HI / DM_NVN_ALIAS_LO (percent of the working set; Potato mode sets 60 / 50): a phone with less memory lets the idle shared textures go sooner
     static int hi = -1, lo = -1;
     if (hi < 0) { const char *h = getenv("DM_NVN_ALIAS_HI"), *l = getenv("DM_NVN_ALIAS_LO"); hi = h && atoi(h) > 0 && atoi(h) <= 100 ? atoi(h) : ALIAS_HI; lo = l && atoi(l) > 0 && atoi(l) < hi ? atoi(l) : MIN((int)ALIAS_LO, hi - 10 > 0 ? hi - 10 : 1);
-                  if (hi != ALIAS_HI || lo != ALIAS_LO) MLOG("shared textures: idle ones retired from %d %% of the working set down to %d %% (DM_NVN_ALIAS_HI / LO)", hi, lo); }
+                  MLOG("shared textures: idle ones retired from %d %% of the working set down to %d %% (%s)", hi, lo, hi != ALIAS_HI || lo != ALIAS_LO ? "DM_NVN_ALIAS_HI / LO" : "the default here"); }
     if (held <= ws / 100 * (uint64_t)hi) return;
     uint64_t freed = 0; pthread_mutex_lock(&g_smu); uint32_t take = own_alias_retire_idle_locked(held, ws / 100 * (uint64_t)lo, ALIAS_RETIRE, &freed); pthread_mutex_unlock(&g_smu);
     if (take) { static int lines; if (lines++ < 8) MLOG("shared textures: %u retired (%llu MB), no live object resolved to them in %d submissions (residency set %llu MB of a %llu MB working set)", take,
@@ -17348,6 +17355,17 @@ static int link_30hz(void) { return front_fullscreen() ? front_screen_variable_r
 // no such mode or with DM_SCREEN_MATCH=0: the 120 Hz link held 59.2 fps, about 2% of frames up 25 ms. A window keeps the 60 Hz link, where every present lands on its
 // target (docs/reference/frame-rate.md)
 static int link_vrr_120(void) { int hz = front_screen_max_fps(); return !g_present_link_env && front_fullscreen() && front_screen_variable_refresh() && hz >= 120 && hz % 120 == 0; }
+static int link_120_for_60(void) {   // link_sync: plain 60 fps on the 120 Hz link (iOS; DM_PRESENT_120=0 keeps 60 Hz, =1 asks for it on the Mac too)
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_PRESENT_120");
+#if TARGET_OS_IPHONE
+        v = !(e && !strcmp(e, "0"));
+#else
+        v = e && !strcmp(e, "1");
+#endif
+        if (v) MLOG("display link: 60 fps on the 120 Hz link where the screen has it, so a late frame shows at 25 ms, not 33 (DM_PRESENT_120)"); }
+    return v;
+}
 static int g_link_mode = 1;   // Current mode of the display link object: 1 / 2 same as g_dm_present_link, 3 = power-saving mode 30 Hz
 static void *link_main(void *arg) {   // Display link thread: started when switching to display-link mode, exits when switching back to 0
     (void)arg;
@@ -17384,6 +17402,10 @@ static void link_sync(void) {   // Called every frame by the game's present thre
     if (vrr) want = 2;
     // HookLink: 60 fps with frame generation runs the 120 Hz link on a screen that has it, a frame every other tick, so the generated frame has a tick of its own between two presents
     if (want == 1 && fg_on() && mtl_fps_target() == 60 && front_screen_max_fps() >= 120) want = 2;
+    // HookLink VX1rc_5: plain 60 fps takes the 120 Hz link too on an iPhone or iPad with a ProMotion screen (not in Low Power Mode, where the screen reads 60), unless DM_PRESENT_LINK chose
+    // the mode. On the 60 Hz link a frame that misses its 16.7 ms is held to the next tick and shows at 33.3 ms, as 30 fps; on the 120 Hz link it shows at the next 8.3 ms tick, 25 ms
+    // (40 fps). The Mac's fullscreen ProMotion fallback (link_vrr_120) runs the same mode: 59.2 fps, about 2 % of frames up 25 ms. DM_PRESENT_120=0 keeps the 60 Hz link
+    if (want == 1 && !g_present_link_env && link_120_for_60() && mtl_fps_target() == 60 && front_screen_max_fps() >= 120) want = 2;
     // The screen's rate changed (switched by front_screen_match, or another screen): the range again, virtual ticks or none. Taken only once the link object exists, so a change
     // while its thread starts (after link_main read the rate) is not lost
     static int hz_was; int hz = front_screen_max_fps(); CAMetalDisplayLink *lk = g_link;

@@ -183,20 +183,36 @@ static void *guest_file_thread(void *arg) {
     (void)arg; const double G = 1073741824.0; size_t pg = (size_t)getpagesize(); char *vec = malloc(g_reserve / pg + 1);
     uint8_t *gst = calloc(g_reserve / pg + 1, 1); atomic_store(&g_gf_state, gst);   // guest_file_unbacked; without it every dirty page counts, as before
     const char *sc = getenv("DM_GUEST_FILE_SCAN"); int scan = sc && atoi(sc) > 0, purge_told = 0;
-    double imp = -1, dirty = -1, unbacked = -1, count_ms = 0; unsigned imp_at = 0;
+    double imp = -1, dirty = -1, unbacked = -1, count_ms = 0; unsigned imp_at = 0; int skipped = 0;
     pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
     for (unsigned sec = 1;; sec++) {
         sleep(1);
         struct statfs fs; struct rusage_info_v4 ru; task_vm_info_data_t vi; mach_msg_type_number_t n = TASK_VM_INFO_COUNT; struct stat st; struct timespec t0, t1;
         if (sec % 10 == 0) guest_file_sweep();
+        int fs_ok = !fstatfs(g_gf_tab[0], &fs); double avail = fs_ok ? (double)fs.f_bavail * fs.f_bsize : -1;
+        // HookLink VX1rc_5: the count is skipped while the disk holds what every page of the files could still take: the files' size less the blocks they hold (a page with a block takes
+        // no new one), with the minimum twice over. The count walked the block with mincore and took 0.1-0.5 s of a core every 10 s, 1-10 s on an iPhone 18 Pro Max short of memory
+        // (VX1rc_4's log), for a figure that could not matter then. A skipped count stands for that worst case, and the stop below counts for real before it acts on it
         if (sec % 10 == 1) {   // every 10 s, from the first second (a burst of new dirty pages between two counts is what the margin's other half is for)
-            clock_gettime(CLOCK_MONOTONIC, &t0);
+            double blocks = 0; for (int i = 0; i < g_gf_n; i++) if (!fstat(g_gf_tab[i], &st)) blocks += st.st_blocks * 512.0;
+            double most = (double)g_reserve - blocks; if (most < 0) most = 0;
+            skipped = fs_ok && g_gf_min_free && avail - most > 2.0 * g_gf_min_free;
+            if (skipped) { dirty = -1; unbacked = most; count_ms = 0; }
+            else {
+                clock_gettime(CLOCK_MONOTONIC, &t0);
+                dirty = vec ? guest_file_dirty(vec, pg) : -1;
+                unbacked = dirty >= 0 && gst ? guest_file_unbacked(vec, gst, g_reserve / pg, pg) : dirty;
+                clock_gettime(CLOCK_MONOTONIC, &t1); count_ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+            }
+        }
+        double need = unbacked > 0 ? unbacked : 0, held = 0, room = avail - need;
+        if (skipped && fs_ok && g_gf_min_free && room < (double)g_gf_min_free) {   // the worst case no longer fits: count for real before anything acts on it
+            skipped = 0; clock_gettime(CLOCK_MONOTONIC, &t0);
             dirty = vec ? guest_file_dirty(vec, pg) : -1;
             unbacked = dirty >= 0 && gst ? guest_file_unbacked(vec, gst, g_reserve / pg, pg) : dirty;
             clock_gettime(CLOCK_MONOTONIC, &t1); count_ms = (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+            need = unbacked > 0 ? unbacked : 0; room = avail - need;
         }
-        double need = unbacked > 0 ? unbacked : 0, held = 0;
-        int fs_ok = !fstatfs(g_gf_tab[0], &fs); double avail = fs_ok ? (double)fs.f_bavail * fs.f_bsize : -1, room = avail - need;
         if (fs_ok && g_gf_min_free && room < (double)g_gf_min_free) {
             if (imp < 0 || sec - imp_at >= 10) { imp = guest_file_free_important(); imp_at = sec; }
             if (room < g_gf_min_free / 2.0 || imp - need < (double)g_gf_min_free) {
@@ -216,9 +232,11 @@ static void *guest_file_thread(void *arg) {
         for (int i = 0; i < g_gf_n; i++) if (!fstat(g_gf_tab[i], &st)) held += st.st_blocks * 512.0;
         int ru_ok = !proc_pid_rusage(getpid(), RUSAGE_INFO_V4, (rusage_info_t *)&ru);
         if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) != KERN_SUCCESS) memset(&vi, 0, sizeof vi);
-        LOG("%s[mem] guest file: %.2f GB allocated on disk, %.2f GB dirty in memory (%.2f GB of it with no block yet; %.0f ms to count, every 10 s), %.2f GB given back as holes; process read %.2f GB, %llu page-ins, logical writes %.2f GB; "
+        char cnt[96]; if (skipped) snprintf(cnt, sizeof cnt, "dirty pages not counted (%.2f GB at most still to take a block, room enough", unbacked / G);
+                      else snprintf(cnt, sizeof cnt, "%.2f GB dirty in memory (%.2f GB of it with no block yet; %.0f ms to count", dirty / G, unbacked / G, count_ms);
+        LOG("%s[mem] guest file: %.2f GB allocated on disk, %s, every 10 s), %.2f GB given back as holes; process read %.2f GB, %llu page-ins, logical writes %.2f GB; "
             "footprint %.2f GB (internal %.2f, compressed %.2f, peak so far %.2f), file pages mapped (external) %.2f GB; %.1f GB free on its disk (%.1f with what the system can purge)",
-            g_gf_min_free && fs_ok && (imp > avail ? imp : avail) - need < g_gf_min_free + G ? "[RED] " : "", held / G, dirty / G, unbacked / G, count_ms, atomic_load(&g_gf_punched) / G,
+            g_gf_min_free && fs_ok && (imp > avail ? imp : avail) - need < g_gf_min_free + G ? "[RED] " : "", held / G, cnt, atomic_load(&g_gf_punched) / G,
             ru_ok ? ru.ri_diskio_bytesread / G : -1, ru_ok ? (unsigned long long)ru.ri_pageins : 0ull,
             ru_ok ? ru.ri_logical_writes / G : -1, vi.phys_footprint / G, vi.internal / G, vi.compressed / G, ru_ok ? ru.ri_lifetime_max_phys_footprint / G : -1, vi.external / G, avail / G, imp / G);
     }

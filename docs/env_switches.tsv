@@ -147,8 +147,8 @@ DM_NICK	switch	The account nickname the game sees (default `Player`)
 DM_NRO	switch	`0` turns off loading of the NRO modules the game's NRR files register (on by default): every `nn::ro::LoadModule` then fails
 DM_NRO_CAPTURE	diagnostic	folder: a `nn::ro::LoadModule` with no rewritten copy writes the image to `<folder>/<SHA-256>.nro` and ends the run (the NSP script's capture of an NRO the game decodes at run time)
 DM_NRO_DIR	path	folder of NROs the shader split reads like `main`, and in which it finds a CRA archive's file table (the NSP script sets it for a captured NRO)
-DM_NVN_ALIAS_HI	switch	Percent of Metal's working set above which idle shared textures are retired (alias_retire_idle; default 85, Potato mode 60)
-DM_NVN_ALIAS_LO	switch	Percent of Metal's working set the retirement of idle shared textures goes down to (default 75, or 10 under DM_NVN_ALIAS_HI; Potato mode 50)
+DM_NVN_ALIAS_HI	switch	Percent of Metal's working set above which idle shared textures are retired (alias_retire_idle; default 70 on iOS, 85 on the Mac; Potato mode 60)
+DM_NVN_ALIAS_LO	switch	Percent of Metal's working set the retirement of idle shared textures goes down to (default 60 on iOS, 75 on the Mac, or 10 under DM_NVN_ALIAS_HI; Potato mode 50)
 DM_NVN_ALIAS_RETIRE	switch	`0` keeps shared textures until their storage is taken over or their pool goes, as before; by default, while the residency set holds more than 85 % of the working set, shared textures no live texture object has resolved to in 64 submissions are retired, the longest idle first, down to 75 % (`alias_retire_idle`)
 DM_NVN_ALLOCPROF	diagnostic	`=1` charges Metal allocation growth to each replayed op type and function, and logs command allocator sizes and each new texture (serial, size, format, storage); `=2` also gives each main submission a fresh command allocator and reports command memory by operation, by encoder, by submission size and the indirect-count multi-draws encoded
 DM_NVN_API	switch	`=<major>.<minor>` overrides the NVN API version `nvnDeviceGetInteger` reports (by default decided by the SDK version or the profile's `device_api`: 55.15 for SDK 11 and later, 53.313 before)
