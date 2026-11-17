@@ -97,4 +97,4 @@ pool_skip_retired	on
 # a kept prewarm held about 1.2 GB on an iPhone), and the idle shared textures let go from 60 % of Metal's working set down to 50 % (85 / 75 by default). kid-with-sword's other memory
 # savers (the GPU memory guard, the texture recycle bin, lazy textures, big pools in the guest files) were written on an engine whose memory code nxnative has since rewritten: main's
 # own render-target release, pool chunks, stand-ins and HookLink's idle retirement and pool_skip_retired stand for them here
-potato	DM_RENDER_SCALE=0.25,DM_FRAMEGEN_SCALE=0.5,DM_PSO_WARM_ONLY=1,DM_NVN_ALIAS_HI=60,DM_NVN_ALIAS_LO=50
+potato	DM_RENDER_SCALE=0.25,DM_FRAMEGEN_SCALE=0.5,DM_PSO_WARM_ONLY=1,DM_NVN_ALIAS_HI=60,DM_NVN_ALIAS_LO=50,DM_SHADOW_SCALE=0.25

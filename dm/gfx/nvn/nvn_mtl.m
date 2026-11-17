@@ -1879,8 +1879,14 @@ static inline id<MTL4RenderCommandEncoder> enc_r_begin(MTL4RenderPassDescriptor 
 static inline void enc_r_end(id e) { m4_end(e); }
 static inline void enc_r_pso(id<MTL4RenderCommandEncoder> e, id<MTLRenderPipelineState> p) { [e setRenderPipelineState:p]; }
 static inline void enc_r_dss(id<MTL4RenderCommandEncoder> e, id<MTLDepthStencilState> s) { [e setDepthStencilState:s]; }
-static inline void enc_r_viewport(id<MTL4RenderCommandEncoder> e, MTLViewport v) { [e setViewport:v]; }
-static inline void enc_r_scissor(id<MTL4RenderCommandEncoder> e, MTLScissorRect r) { [e setScissorRect:r]; }
+static double g_rt_vs = 1; static NSUInteger g_rt_mw, g_rt_mh;   // the open pass's scale from the game's coordinates to its attachment's (a shadow target shadow_scale made smaller), its Metal size
+static inline void enc_r_viewport(id<MTL4RenderCommandEncoder> e, MTLViewport v) { if (g_rt_vs != 1) { v.originX *= g_rt_vs; v.originY *= g_rt_vs; v.width *= g_rt_vs; v.height *= g_rt_vs; } [e setViewport:v]; }
+static inline void enc_r_scissor(id<MTL4RenderCommandEncoder> e, MTLScissorRect r) {
+    if (g_rt_vs != 1) { NSUInteger x0 = (NSUInteger)floor(r.x * g_rt_vs), y0 = (NSUInteger)floor(r.y * g_rt_vs), x1 = (NSUInteger)ceil((r.x + r.width) * g_rt_vs), y1 = (NSUInteger)ceil((r.y + r.height) * g_rt_vs);
+        if (g_rt_mw && x1 > g_rt_mw) x1 = g_rt_mw; if (g_rt_mh && y1 > g_rt_mh) y1 = g_rt_mh; if (x0 >= x1) x0 = x1 ? x1 - 1 : 0; if (y0 >= y1) y0 = y1 ? y1 - 1 : 0;
+        r = (MTLScissorRect){x0, y0, MAX(x1 - x0, 1u), MAX(y1 - y0, 1u)}; }
+    [e setScissorRect:r];
+}
 static inline void enc_r_cull(id<MTL4RenderCommandEncoder> e, MTLCullMode m) { [e setCullMode:m]; }
 static inline void enc_r_winding(id<MTL4RenderCommandEncoder> e, MTLWinding w) { [e setFrontFacingWinding:w]; }
 static inline void enc_r_fill(id<MTL4RenderCommandEncoder> e, MTLTriangleFillMode m) { [e setTriangleFillMode:m]; }
@@ -3150,6 +3156,40 @@ static int tex_atomic_alias(id<MTLTexture> base) {
         || pf == MTLPixelFormatRGBA8Uint || pf == MTLPixelFormatRGBA8Sint || pf == MTLPixelFormatRGB10A2Unorm || pf == MTLPixelFormatRGB10A2Uint || pf == MTLPixelFormatRG11B10Float || pf == MTLPixelFormatRGB9E5Float
         || pf == MTLPixelFormatRG16Unorm || pf == MTLPixelFormatRG16Snorm || pf == MTLPixelFormatRG16Uint || pf == MTLPixelFormatRG16Sint || pf == MTLPixelFormatRG16Float || pf == MTLPixelFormatR32Float;
     return bytes32 && (base.textureType == MTLTextureType2D || base.textureType == MTLTextureType2DArray) && base.sampleCount == 1 && base.storageMode == MTLStorageModePrivate && !base.buffer && !base.isSparse;
+}
+// HookLink VX1rc_5, shadow map size (DM_SHADOW_SCALE, the launcher's Shadow map row): a depth render target of 8192x8192 or more (Ocarina of Time's 12288x12288 Depth16 shadow
+// target, 296 MB) is made at that fraction of its size, and the passes that draw into it have their viewports, scissors and render area scaled to it (g_rt_vs, enc_r_viewport,
+// enc_r_scissor): the game keeps its own coordinates, shaders sample it by normalised coordinates, and copies into or out of it are skipped. 1 = the game's size, 0.5 a quarter
+// of the memory and the pixels, 0.25 a sixteenth. Shadows are a little softer; nothing else changes. Default 0.5 on iOS, 1 on the Mac
+static double shadow_scale(void) {
+    static double v = -1;
+    if (v < 0) { const char *e = getenv("DM_SHADOW_SCALE");
+#if TARGET_OS_IPHONE
+        v = 0.5;
+#else
+        v = 1;
+#endif
+        if (e && *e) { double x = atof(e); v = x >= 0.2 && x <= 1 ? x : v; }
+        if (v < 1) MLOG("shadow map: depth targets of 8192 or more made at %.2f of their size (DM_SHADOW_SCALE)", v); }
+    return v;
+}
+static NSHashTable *g_scaled_tex; static os_unfair_lock g_scaled_lock = OS_UNFAIR_LOCK_INIT;   // the textures shadow_scale_desc made smaller (weak)
+static int tex_scaled(id<MTLTexture> t) {
+    if (!t || !g_scaled_tex) return 0;
+    id<MTLTexture> b = t.parentTexture ? t.parentTexture : t;
+    os_unfair_lock_lock(&g_scaled_lock); int r = [g_scaled_tex containsObject:b]; os_unfair_lock_unlock(&g_scaled_lock); return r;
+}
+static void tex_scaled_add(id<MTLTexture> t) {
+    os_unfair_lock_lock(&g_scaled_lock); if (!g_scaled_tex) g_scaled_tex = [NSHashTable weakObjectsHashTable]; [g_scaled_tex addObject:t]; os_unfair_lock_unlock(&g_scaled_lock);
+}
+static int shadow_scale_desc(const tex_t *t, MTLTextureDescriptor *d) {   // 1 when d was made smaller
+    double sc = shadow_scale(); if (sc >= 1) return 0;
+    MTLPixelFormat pf = d.pixelFormat;
+    int depth = pf == MTLPixelFormatDepth16Unorm || pf == MTLPixelFormatDepth32Float || pf == MTLPixelFormatDepth32Float_Stencil8;
+    if (!depth || d.textureType != MTLTextureType2D || d.sampleCount > 1 || d.mipmapLevelCount != 1 || d.width < 8192 || d.height < 8192) return 0;
+    NSUInteger w = d.width, h = d.height; d.width = (NSUInteger)ceil(w * sc); d.height = (NSUInteger)ceil(h * sc);
+    static int n; if (n++ < 4) MLOG("shadow map: ser=%llu %lux%lu format %lu made at %lux%lu (DM_SHADOW_SCALE %.2f)", (unsigned long long)t->serial, (unsigned long)w, (unsigned long)h, (unsigned long)pf, (unsigned long)d.width, (unsigned long)d.height, sc);
+    return 1;
 }
 static MTLTextureDescriptor *tex_desc(const tex_t *t, int packaged) {
     uint32_t pf = 0; uint8_t swz[4];
@@ -5092,11 +5132,13 @@ static id<MTLTexture> tex_mtl_(const tex_t *ct, int *in_storage) {
     if (!mt) {
         MTLTextureDescriptor *d = tex_desc(t, 0);
         if (!d) return nil;
+        int scaled = shadow_scale_desc(t, d);   // a large shadow target made smaller (shadow_scale)
         tu = (t->d.flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) && rh_fits(t, d.usage);   // a render target another one may draw over (tu_pass)
         mt = image_texture(t, d);
         if (!mt) { mt = rh_texture(t, d); if (!mt) { rt_lossy(d); mt = [g_dev newTextureWithDescriptor:d]; if (!mt && d.compressionType == MTLTextureCompressionTypeLossy) { d.compressionType = MTLTextureCompressionTypeLossless; mt = [g_dev newTextureWithDescriptor:d]; } }
             if (mt) { res_add(mt); if (!tex_init_fill(t, mt, again)) tex_zero_fill(mt); } }
         if (!mt) { RED_ONCE(2, "failed to create MTLTexture %ux%u format %#x target %d", t->d.width, t->d.height, t->d.format, t->d.target); return nil; }
+        if (scaled) tex_scaled_add(mt);
     }
     if (mt.allocatedSize >= (256u << 20)) { static int nb; if (nb++ < 20)   // the textures that take most of the GPU's memory (a GPU out-of-memory error says nothing of which)
         MLOG("large texture ser=%llu %ux%ux%u format %#x target %d levels %u: %llu MB%s", (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, t->d.target, t->d.levels,
@@ -5715,7 +5757,7 @@ static void pb_report(uint64_t frame) {
     for (int k = 0; k < PB_N; k++) g_pb[k].n = 0;
     g_pb_same = g_pb_all = g_pb_other = 0;
 }
-static void rp_end_at(const char *fn, int line) { if (g_enc) { g_pb_end_fn = fn; g_pb_end_line = line; AP_B; geo_mesh_flush_pass(); PD("E %llu pass ends in %s:%d", g_stat_pass, fn, line);
+static void rp_end_at(const char *fn, int line) { g_rt_vs = 1; g_rt_mw = g_rt_mh = 0; if (g_enc) { g_pb_end_fn = fn; g_pb_end_line = line; AP_B; geo_mesh_flush_pass(); PD("E %llu pass ends in %s:%d", g_stat_pass, fn, line);
     if (enc_label_on()) { static uint64_t lf = ~0ull, base; uint64_t f = atomic_load(&g_cur_frame); if (f != lf) { lf = f; base = g_stat_pass - 1; }   // Intra-frame serial: the same pass has the same name every frame, so the table can aggregate by name
         [(id)g_enc setLabel:[NSString stringWithFormat:@"p%02llu %dx%d %s d%d", (unsigned long long)(g_stat_pass - base), g_el_w, g_el_h, g_el_key[0] ? g_el_key : "-", g_el_draws]]; }
     sd_finish(); enc_r_end_pass(g_enc); g_gp_bw_l0 = g_bw_load; g_gp_bw_s0 = g_bw_store;   // the profile's per-pass ledger counts from the previous pass end, profiled or not
@@ -5990,6 +6032,8 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
     if (rpa_on() && !g_rp_whole && !clear_only && R.has_sc && !g_rp_layered && !R.clear_d && !R.clear_s) {
         int cl = 0; for (int i = 0; i < 8; i++) cl |= R.clear_c[i];
         NSUInteger tw = 0, th = 0; if (!cl) rt_dims(&tw, &th);
+        int col = 0; for (int i = 0; i < R.rt.n && i < 8; i++) col |= R.rt.color[i] != NULL;
+        if (!col && R.rt.depth && tex_scaled(tex_mtl(R.rt.depth))) tw = th = 0;   // a smaller shadow target: no render area in the game's coordinates (shadow_scale)
         if (tw * th >= (1u << 24)) { NSUInteger w = MIN(tw, (NSUInteger)MAX((long)R.sc.x + R.sc.w, 1)), h = MIN(th, (NSUInteger)MAX((long)R.sc.y + R.sc.h, 1));
             if (w * h * 2 <= tw * th) { pd.renderTargetWidth = w; pd.renderTargetHeight = h; g_rp_aw = w; g_rp_ah = h; } } }
     // A pass covers only the smallest of its attachments, and so does a clear folded into its load action, while NVN clears the whole target. Bayonetta 2 (SDK 3.6) starts every frame with a
@@ -6071,6 +6115,13 @@ static id<MTL4RenderCommandEncoder> rp_begin_ex_(int clear_only) {
            R.rt.has_dview && R.rt.dview.set_format ? R.rt.dview.format : 0, g_pass.dfmt, g_pass.sfmt, g_pass.hd, g_pass.hs, clear_only);
         if (dt || stt) g_pass.samples = (uint32_t)(dt ? dt : stt).sampleCount;
         pass_dims(pd, (NSUInteger)R.rt.n, &g_pass.tw, &g_pass.th);
+        // A depth-only pass into a shadow target shadow_scale made smaller: the game's coordinates stay its own (g_pass.tw / th its size), the encoder scales them (enc_r_viewport)
+        g_rt_vs = 1; g_rt_mw = g_rt_mh = 0;
+        { int col = 0; for (NSUInteger i = 0; i < (NSUInteger)R.rt.n && i < 8; i++) col |= pd.colorAttachments[i].texture != nil;
+          if (!col && dt && tex_scaled(dt) && R.rt.depth && R.rt.depth->d.width) {
+              NSUInteger lv = pd.depthAttachment.level; g_rt_mw = g_pass.tw; g_rt_mh = g_pass.th;
+              g_pass.tw = mip_extent(R.rt.depth->d.width, lv); g_pass.th = mip_extent(R.rt.depth->d.height, lv); g_rt_vs = (double)g_rt_mw / (double)g_pass.tw;
+              static int n; if (n++ < 2) MLOG("shadow map: a pass draws at %.2f into its %lux%lu target (the game's %lux%lu)", g_rt_vs, (unsigned long)g_rt_mw, (unsigned long)g_rt_mh, (unsigned long)g_pass.tw, (unsigned long)g_pass.th); } }
         pb_note(pd);
         g_enc_pso = nil; g_enc_dss = nil; g_ed.ok = 0;
     }
@@ -6112,7 +6163,8 @@ static void rt_dims(NSUInteger *tw, NSUInteger *th) {
     for (int i = 0; i < R.rt.n && i < 8 && !t0; i++) if (R.rt.color[i]) {
         t0 = tex_mtl(R.rt.color[i]); level = R.rt.has_cview[i] && R.rt.cview[i].set_levels ? R.rt.cview[i].base_level : 0;
     }
-    if (!t0 && R.rt.depth) { t0 = tex_mtl(R.rt.depth); level = R.rt.has_dview && R.rt.dview.set_levels ? R.rt.dview.base_level : 0; }
+    if (!t0 && R.rt.depth) { t0 = tex_mtl(R.rt.depth); level = R.rt.has_dview && R.rt.dview.set_levels ? R.rt.dview.base_level : 0;
+        if (t0 && tex_scaled(t0)) { *tw = mip_extent(R.rt.depth->d.width, level); *th = mip_extent(R.rt.depth->d.height, level); return; } }   // a smaller shadow target: the game's coordinates (shadow_scale)
     *tw = t0 ? mip_extent(t0.width, level) : 16384; *th = t0 ? mip_extent(t0.height, level) : 16384;   // no targets: an attachment-less pass can be up to 16384 (bare_dims)
 }
 // There are pending clears but no draw in the pass: open a pass once to land the clears
@@ -15057,6 +15109,7 @@ static void copy_t2b(const p_copy_b2t *c, uint32_t size) {
     g_wr_epoch++; g_mdx_epoch++;
     id<MTLTexture> t = tex_mtl_all(c->tex);
     if (!t) return;
+    if (tex_scaled(t)) { static int n; if (!n++) MLOG("[RED] shadow map: a texture-to-buffer copy from a target made smaller is skipped (DM_SHADOW_SCALE=1 keeps its size)"); return; }
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
     if (!tex_level_ok(t, level, "texture-to-buffer copy")) return;
@@ -15178,6 +15231,7 @@ static size_t mtl_pf_block_bytes(MTLPixelFormat pf) {   // bytes per texel, or p
 static void copy_b2t(const p_copy_b2t *c, uint32_t size) {
     id<MTLTexture> t = tex_mtl_all(c->tex); sparse_gpu_wrote(c->tex); tu_wrote(t);
     if (!t) { PD("C ser=%llu (no host texture)", c->tex->serial); return; }
+    if (tex_scaled(t)) { static int n; if (!n++) MLOG("[RED] shadow map: a buffer-to-texture copy into a target made smaller is skipped (DM_SHADOW_SCALE=1 keeps its size)"); return; }
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh);
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
     if (!tex_level_ok(t, level, "buffer-to-texture copy")) return;
@@ -15513,6 +15567,7 @@ static id<MTLTexture> copy_t2t_enc(const p_copy_t2t *c) {
 // The destination's written region reaches its storage too when the CPU can read it (gsb_store), after the copy in command order: a 3D destination's planes from the region's z, any
 // other's layers from the view's first
 static void copy_t2t(const p_copy_t2t *c) {
+    if ((c->src && tex_scaled(tex_mtl(c->src))) || (c->dst && tex_scaled(tex_mtl(c->dst)))) { static int n; if (!n++) MLOG("[RED] shadow map: a texture copy into or out of a target made smaller is skipped (DM_SHADOW_SCALE=1 keeps its size)"); return; }
     id<MTLTexture> d = copy_t2t_enc(c);
     if (d) gsb_store(c->dst, d, c->has_dv && c->dv.set_levels ? c->dv.base_level : 0, (c->dst->d.target == NVN_TEXTURE_TARGET_3D ? 0 : c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0) + (unsigned)c->dr.zoffset,
                      (unsigned)(c->dr.depth ? c->dr.depth : 1), &c->dr);
