@@ -300,7 +300,7 @@ private struct LauncherView: View {
     @State private var cheatsOn: Set<String> = Set((UserDefaults.standard.string(forKey: "hooklink.cheats") ?? "").split(separator: "\n").map(String.init))
 
     private var docs: URL { FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0] }
-    private var version: String { (info("HookLinkVersion") as? String) ?? "X1" }   // no build sets HookLinkVersion: this is the version shown (HookLink X1, the VX1 line); raise it with each HookLink release
+    private var version: String { (info("HookLinkVersion") as? String) ?? "X2" }   // no build sets HookLinkVersion: this is the version shown (HookLink X2, the VX2 line); raise it with each HookLink release
     private var playRows: [Setting] {
         let want = ["DM_FRAME_MODE", "DM_RENDER_SCALE", "DM_DYNAMIC_RESOLUTION", "DM_WIDE_VIEW", "DM_PAD_THEME"]
         return want.compactMap { e in m.settings.first { $0.env == e } }
