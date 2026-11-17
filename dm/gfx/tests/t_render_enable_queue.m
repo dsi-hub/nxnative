@@ -233,7 +233,55 @@ int main(void) { @autoreleasepool {
     P(nvnCommandBufferSetRenderEnable)(&command,1);
     P(nvnCommandBufferCopyTextureToBuffer)(&command,&target,NULL,&region,output,0);
     submit(0,P(nvnCommandBufferEndRecording)(&command),&sync);finish(&sync);
-    CHECK(pixels(0,0,255,0),"query in flight keeps its block drawing");
+    // An empty query of the same submission counts no slot, so its value is 0 whatever the GPU does: GPU occlusion culls its block as the console does; without it, the block draws
+    CHECK(occ_on() ? pixels(0,0,0,255) : pixels(0,0,255,0),occ_on() ? "an empty query in flight is 0: its block culled on the GPU" : "query in flight keeps its block drawing");
+
+    // GPU occlusion (occ_job, HookLink VX1rc_6): queries reported in an earlier submission that has not run yet (the GPU held at a gate) decide the next submission's blocks on the
+    // GPU, as Ocarina of Time reports its queries a submission ahead of the conditional draws: a zero query culls its block, a nonzero one draws it, both pending at replay
+    for (int mode=0;mode<2;mode++) {
+        uint64_t *q0=(uint64_t *)(memory+EVENT+512),*q1=(uint64_t *)(memory+EVENT+576),*q2=(uint64_t *)(memory+EVENT+640),*q3=(uint64_t *)(memory+EVENT+704);
+        q0[0]=q1[0]=q2[0]=q3[0]=7;q0[2]=q1[2]=q2[2]=q3[2]=7;
+        id<MTLSharedEvent> gate=[g_dev newSharedEvent]; [g_q4 waitForEvent:gate value:1];
+        P(nvnCommandBufferBeginRecording)(&command);
+        P(nvnCommandBufferSetRenderTargets)(&command,1,colors,NULL,NULL,NULL);
+        P(nvnCommandBufferSetViewports)(&command,0,1,viewport); P(nvnCommandBufferSetScissor)(&command,0,0,W,H);
+        P(nvnCommandBufferBindProgram)(&command,&stable_red,3);
+        // q0 / q0+16: begin and end of an empty query; q1+16 / q1: of a drawn one (the pair a condition compares: equal when nothing was counted between them)
+        P(nvnCommandBufferResetCounter)(&command,NVN_COUNTER_TYPE_SAMPLES_PASSED);
+        P(nvnCommandBufferReportCounter)(&command,NVN_COUNTER_TYPE_SAMPLES_PASSED,(NVNbufferAddress)(uintptr_t)(q0+2));
+        P(nvnCommandBufferReportCounter)(&command,NVN_COUNTER_TYPE_SAMPLES_PASSED,(NVNbufferAddress)(uintptr_t)q0);
+        P(nvnCommandBufferReportCounter)(&command,NVN_COUNTER_TYPE_SAMPLES_PASSED,(NVNbufferAddress)(uintptr_t)(q1+2));
+        P(nvnCommandBufferDrawArrays)(&command,NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);
+        P(nvnCommandBufferReportCounter)(&command,NVN_COUNTER_TYPE_SAMPLES_PASSED,(NVNbufferAddress)(uintptr_t)q1);
+        // q2 / q3: a reset and one report each, compared with a zero word the CPU set at +16 (q2 after a draw, q3 after none)
+        q2[2]=q3[2]=0;
+        P(nvnCommandBufferResetCounter)(&command,NVN_COUNTER_TYPE_SAMPLES_PASSED);
+        P(nvnCommandBufferDrawArrays)(&command,NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);
+        P(nvnCommandBufferReportCounter)(&command,NVN_COUNTER_TYPE_SAMPLES_PASSED,(NVNbufferAddress)(uintptr_t)q2);
+        P(nvnCommandBufferResetCounter)(&command,NVN_COUNTER_TYPE_SAMPLES_PASSED);
+        P(nvnCommandBufferReportCounter)(&command,NVN_COUNTER_TYPE_SAMPLES_PASSED,(NVNbufferAddress)(uintptr_t)q3);
+        NVNsync s1; submit(0,P(nvnCommandBufferEndRecording)(&command),&s1);
+        NVNbufferAddress qs[4]={(NVNbufferAddress)(uintptr_t)q0,(NVNbufferAddress)(uintptr_t)q1,(NVNbufferAddress)(uintptr_t)q2,(NVNbufferAddress)(uintptr_t)q3};
+        NVNsync s2[4];
+        for (int k=0;k<4;k++) {
+            P(nvnCommandBufferBeginRecording)(&command);
+            P(nvnCommandBufferClearColor)(&command,0,blue,15);
+            P(nvnCommandBufferBindProgram)(&command,&stable_green,3);
+            P(nvnCommandBufferSetRenderEnableConditional)(&command,(NVNconditionalRenderMode)mode,qs[k]);
+            P(nvnCommandBufferDrawArrays)(&command,NVN_DRAW_PRIMITIVE_TRIANGLES,0,3);
+            P(nvnCommandBufferSetRenderEnable)(&command,1);
+            P(nvnCommandBufferCopyTextureToBuffer)(&command,&target,NULL,&region,output+(NVNbufferAddress)(k*BYTES),0);
+            submit(0,P(nvnCommandBufferEndRecording)(&command),&s2[k]);
+        }
+        uint64_t gpu0=g_rc_st_gpu; (void)gpu0;
+        gate.signaledValue=1; finish(&s1); for (int k=0;k<4;k++) finish(&s2[k]);
+        CHECK(q0[0]==q0[2] && q1[0]-q1[2]==W*H && q2[0]==W*H && q3[0]==0,"the held queries land with their counts");
+        // mode 1 (draw if not equal): the empty query and q3 cull, the drawn query and q2 draw; mode 0 the other way round
+        int drawn[4]={0,1,1,0}; const char *nm[2][4]={{"GPU-decided, draw if equal: empty pair drawn","GPU-decided, draw if equal: counted pair culled","GPU-decided, draw if equal: counted against zero culled","GPU-decided, draw if equal: empty against zero drawn"},
+                                                          {"GPU-decided, draw if not equal: empty pair culled","GPU-decided, draw if not equal: counted pair drawn","GPU-decided, draw if not equal: counted against zero drawn","GPU-decided, draw if not equal: empty against zero culled"}};
+        for (int k=0;k<4;k++) { int want=!occ_on() || (mode ? drawn[k] : !drawn[k]);   /* off (DM_NVN_OCC_GPU=0): pending blocks draw */ CHECK(want ? pixels(k*BYTES,0,255,0) : pixels(k*BYTES,0,0,255),nm[mode][k]); }
+    }
+    CHECK(!occ_on() || (g_occ_jobs_n>=8 && g_occ_kernels_n>=1),"the held conditions were decided on the GPU (jobs and kernels counted)");
 
     // An operand no report writes, written by GPU work queued before the condition (Portal 2's D3D9 layer has a shader write each mesh's visibility word): memory does not hold
     // it yet when the condition is evaluated, so the block draws; with no such writer, memory decides

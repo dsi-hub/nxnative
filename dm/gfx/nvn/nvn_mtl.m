@@ -1271,7 +1271,14 @@ typedef struct rc_report {
     uint8_t known, dirty, readable, reported, report_dirty, unreliable, gpu_domain, opaque_unreliable, opaque_later, conservative;
     uint8_t stale_ok; uint64_t stale;   // the samples-passed result that landed before the pending one (DM_NVN_RC_STALE)
     struct rc_report *page_next, *dirty_next;
+    // GPU occlusion (occ_job): where this samples-passed report's value comes from on the GPU. Its counting epoch (from a reset, or from the first report of a game that never resets),
+    // the report before it in that epoch (occ_prev, valid while its occ_seq is occ_prev_seq), and the visibility slots its value adds to the one before (occ_n of them; 255: not known)
+    uint64_t occ_seq, occ_prev_seq; struct rc_report *occ_prev; uint32_t occ_epoch; uint8_t occ_n, occ_first, occ_base0;
+    uint64_t occ_gpu[4]; uint8_t occ_ring[4]; uint32_t occ_gen[4];
 } rc_report;
+static int g_occ_job = -1, g_occ_draw; static rc_report *g_occ_last;   // g_occ_last: the epoch's last report (occ_report)   // the GPU-decided condition the draws of this block patch (occ_job), and whether a draw of the game's is being encoded (OP_DRAW*)
+static void occ_fold(void);   // at a submission's end (VIS_FOLD)
+static uint64_t occ_args(const void *a, size_t n, uint32_t field);   // a draw's indirect arguments, zeroed by occ_kernel when its condition is false; 0: draw directly
 static nvn_hmap g_rc_reports={.klen=8}, g_rc_pages={.klen=8};
 static uint64_t *g_rc_page_order; static uint32_t g_rc_page_n, g_rc_page_cap;
 static uint32_t rc_page_lower(uint64_t page) {
@@ -1311,7 +1318,7 @@ static void rc_commit(uint64_t fence) {
 }
 static void rc_forget(void) {
     g_rc_dirty=NULL; g_rc_gpu_epoch=g_rc_gpu_fence=0; g_rc_gpu_dirty=0;
-    nvn_hm_clear(&g_rc_pages,NULL); nvn_hm_clear(&g_rc_reports,free);
+    nvn_hm_clear(&g_rc_pages,NULL); nvn_hm_clear(&g_rc_reports,free); g_occ_last=NULL; g_occ_job=-1;   // GPU occlusion keeps no report across this
     free(g_rc_page_order); g_rc_page_order=NULL; g_rc_page_n=g_rc_page_cap=0;
 }
 static rc_report *rc_ensure(uint64_t addr) {
@@ -1339,13 +1346,13 @@ static void rc_query_operand(rc_report *r) {
 // and 1,000-1,500 samples-passed reports a frame in the test31 log. The cost: an object coming into view is drawn one frame late. After cheemu21's X12 (kid-with-sword-remake,
 // its own report table); here on nxnative main's rc_report. DM_NVN_RC_STALE=0 draws them as before
 static int g_rc_stale_on = -1;
-static uint64_t g_rc_st_known, g_rc_st_stale, g_rc_st_unknown, g_rc_st_skipped;   // conditions since the last report line: decided from memory, decided from the result before, drawn unknown; skipped
+static uint64_t g_rc_st_known, g_rc_st_stale, g_rc_st_unknown, g_rc_st_skipped, g_rc_st_gpu;   // conditions since the last report line: decided from memory, decided from the result before, drawn unknown; skipped
 static int rc_stale_on(void) { if (g_rc_stale_on < 0) { const char *e = getenv("DM_NVN_RC_STALE"); g_rc_stale_on = e && atoi(e) > 0; /* off unless asked for (the launcher passes its setting); unset, NVN's rule: a pending result draws */ MLOG("render conditions: %s (DM_NVN_RC_STALE)", g_rc_stale_on ? "a pending occlusion result takes the one that landed before it (Skip hidden objects)" : "a pending occlusion result draws"); } return g_rc_stale_on; }
 static void rc_report_line(uint64_t frame) {
     uint64_t n = g_rc_st_known + g_rc_st_stale + g_rc_st_unknown; if (!n) return;
-    MLOG("render conditions up to frame %llu: %llu evaluated, %llu from memory, %llu from the result before (Skip hidden objects), %llu drawn unknown; %llu skipped (%.0f%%)", (unsigned long long)frame,
-         (unsigned long long)n, (unsigned long long)g_rc_st_known, (unsigned long long)g_rc_st_stale, (unsigned long long)g_rc_st_unknown, (unsigned long long)g_rc_st_skipped, 100.0 * (double)g_rc_st_skipped / (double)n);
-    g_rc_st_known = g_rc_st_stale = g_rc_st_unknown = g_rc_st_skipped = 0;
+    MLOG("render conditions up to frame %llu: %llu evaluated, %llu from memory, %llu from the result before (Skip hidden objects), %llu pending (%llu of them decided on the GPU, the rest drawn); %llu skipped on the CPU (%.0f%%)", (unsigned long long)frame,
+         (unsigned long long)n, (unsigned long long)g_rc_st_known, (unsigned long long)g_rc_st_stale, (unsigned long long)g_rc_st_unknown, (unsigned long long)g_rc_st_gpu, (unsigned long long)g_rc_st_skipped, 100.0 * (double)g_rc_st_skipped / (double)n);
+    g_rc_st_known = g_rc_st_stale = g_rc_st_unknown = g_rc_st_skipped = g_rc_st_gpu = 0;
 }
 static void rc_note(uint64_t addr, int kind) {
     rc_report *r=rc_ensure(addr);
@@ -1486,7 +1493,7 @@ static void rc_gpu_write(uint64_t dst, uint64_t n) {
 typedef struct { void *buf; uint32_t slot; } vis_slot;
 typedef struct { int n; vis_slot s[]; } vis_list;
 #define VIS_SLOTS 8192
-typedef struct { __strong id<MTLBuffer> buf; uint64_t fence; } vis_buf;
+typedef struct { __strong id<MTLBuffer> buf; uint64_t fence; uint32_t gen; } vis_buf;   // gen: times taken (GPU occlusion checks a slot's buffer was not taken again since)
 // One visibility buffer per submission in flight, as many as command allocators: with 4, Age of Calamity (about twelve submissions a frame) waited in mtl_sub_begin for the previous frame's GPU work; its first battle went from 18.0 to 16.9 ms a frame on the Mac
 // The ring grows on demand (vis_take), each buffer kept resident and reused once its submission's fence passes. Since a frame's submissions share a command allocator, more
 // counting submissions are in flight than allocators: with a ring of 8, a GPU running behind left none free and each such submission made a one-off buffer, added to the
@@ -1933,10 +1940,17 @@ static inline void enc_r_args(id<MTL4RenderCommandEncoder> e, MTLRenderStages s,
     uint32_t bit = 1u << i; if (!(g_ft_valid & bit) || g_ft_addr[i] != gpu) { geo_mesh_ft_change(); g_ft_addr[i] = gpu; g_ft_valid |= bit; }
     if (rec_on()) rec_table_op(RO_T_ADDR, g_ft, gpu, i); else [g_ft setAddress:gpu atIndex:i];
 }
-static inline void enc_r_draw(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n) { g_cm_mdraws++; [e drawPrimitives:p vertexStart:v vertexCount:n]; }
-static inline void enc_r_draw_instanced(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n, NSUInteger i, NSUInteger b) { g_cm_mdraws++; [e drawPrimitives:p vertexStart:v vertexCount:n instanceCount:i baseInstance:b]; }
+static inline void enc_r_draw_instanced(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n, NSUInteger i, NSUInteger b) {
+    g_cm_mdraws++;
+    if (g_occ_job >= 0 && g_occ_draw) { uint32_t a[4] = {(uint32_t)n, (uint32_t)i, (uint32_t)v, (uint32_t)b}; uint64_t ind = occ_args(a, sizeof a, 4); if (ind) { [e drawPrimitives:p indirectBuffer:ind]; return; } }   // under a GPU-decided condition (occ_job)
+    [e drawPrimitives:p vertexStart:v vertexCount:n instanceCount:i baseInstance:b];
+}
+static inline void enc_r_draw(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n) {
+    if (g_occ_job >= 0 && g_occ_draw) { enc_r_draw_instanced(e, p, v, n, 1, 0); return; }
+    g_cm_mdraws++; [e drawPrimitives:p vertexStart:v vertexCount:n];
+}
 static inline void enc_r_draw_indirect(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, uint64_t gpu) { za_check(gpu, "indirect draw record", -1); g_cm_mdraws++; [e drawPrimitives:p indirectBuffer:gpu]; }
-static inline void enc_r_draw_indexed(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger n, MTLIndexType t, uint64_t gpu, NSUInteger len, NSUInteger i, NSInteger bv, NSUInteger bi) { za_check(gpu, "index buffer", -1); g_cm_mdraws++; [e drawIndexedPrimitives:p indexCount:n indexType:t indexBuffer:gpu indexBufferLength:len instanceCount:i baseVertex:bv baseInstance:bi]; }
+static inline void enc_r_draw_indexed(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger n, MTLIndexType t, uint64_t gpu, NSUInteger len, NSUInteger i, NSInteger bv, NSUInteger bi) { za_check(gpu, "index buffer", -1); g_cm_mdraws++; if (g_occ_job >= 0 && g_occ_draw) { int32_t a[5] = {(int32_t)n, (int32_t)i, 0, (int32_t)bv, (int32_t)bi}; uint64_t ind = occ_args(a, sizeof a, 4); if (ind) { [e drawIndexedPrimitives:p indexType:t indexBuffer:gpu indexBufferLength:len indirectBuffer:ind]; return; } }   /* under a GPU-decided condition (occ_job) */ [e drawIndexedPrimitives:p indexCount:n indexType:t indexBuffer:gpu indexBufferLength:len instanceCount:i baseVertex:bv baseInstance:bi]; }
 static inline void enc_r_draw_indexed_indirect(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, MTLIndexType t, uint64_t gpu, NSUInteger len, uint64_t ind) { za_check(gpu, "index buffer", -1); za_check(ind, "indexed indirect draw record", -1); g_cm_mdraws++; [e drawIndexedPrimitives:p indexType:t indexBuffer:gpu indexBufferLength:len indirectBuffer:ind]; }
 static void ubd_land_compute(void);
 static inline id<MTL4ComputeCommandEncoder> enc_c_begin(MTLComputePassDescriptor *d) { if (g_tf_enc) tf_pass_end(); g_cm_enc++; (void)d; ubd_land_compute(); cm_enc_mark(3); id<MTL4ComputeCommandEncoder> e = [g_cb computeCommandEncoder]; cm_enc_mark(1); [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; [e setArgumentTable:g_ct]; gp_begin(e, 'C', nil); return e; }
@@ -2430,7 +2444,7 @@ static void vis_take(void) {
     for (int i = 0; i < g_vis_ring_n; i++) if (g_vis_ring[i].fence <= g_done) { pick = i; break; }
     if (pick < 0 && g_vis_ring_n < VIS_RING) pick = g_vis_ring_n++;
     if (pick < 0) return;
-    g_vis_ring_i = pick; g_vis_ring[pick].fence = UINT64_MAX;
+    g_vis_ring_i = pick; g_vis_ring[pick].fence = UINT64_MAX; g_vis_ring[pick].gen++;
     if (!g_vis_ring[pick].buf) { g_vis_ring[pick].buf = [g_dev newBufferWithLength:VIS_SLOTS * 8 options:MTLResourceStorageModeShared]; res_add(g_vis_ring[pick].buf); }
     g_vis = g_vis_ring[pick].buf; g_vis_n = 0;
 }
@@ -2779,7 +2793,7 @@ uint64_t mtl_sub_commit(void) {
     rt_preserve_bound();   // The game may reuse completed command memory; queue bindings must not point into its texture snapshots.
     queue_program_preserve(); // Submitted metadata may retire while these programs remain bound.
     uint64_t fence = ++g_fence;
-    if (g_nvs) { post((post_op){3, NULL, VIS_FOLD, 0, 0, 0, vis_snapshot()}); vis_clear(); }   // this submission's slots after its last report: read at its completion (Occlusion queries)
+    if (g_nvs) { occ_fold(); post((post_op){3, NULL, VIS_FOLD, 0, 0, 0, vis_snapshot()}); vis_clear(); }   // this submission's slots after its last report: read at its completion (Occlusion queries)
     gw_commit(fence); rc_commit(fence);
     if (g_vis_ring_i >= 0) g_vis_ring[g_vis_ring_i].fence = fence;
     // CPU-visible effects after completion: copy the op table into the callback
@@ -8116,6 +8130,7 @@ static void queue_program_preserve(void) {
 void mtl_queue_activate(uint64_t serial) {   // caller holds the submission lock
     if (g_active_queue && g_active_queue->serial == serial) return;
     if (g_active_queue) { g_active_queue->s = S; g_active_queue->r = R; g_active_queue->rc_skip=g_rc_skip; }
+    g_occ_job = -1;   // a GPU-decided block does not go to another queue: its draws there are drawn
     queue_state *q = g_queue_states;
     while (q && q->serial != serial) q = q->next;
     if (q) { S = q->s; R = q->r; g_rc_skip=q->rc_skip; prog_resolve(); }
@@ -14296,6 +14311,119 @@ static int lc_keeps(uint32_t op) {
     }
 }
 
+// ---------- GPU occlusion (DM_NVN_OCC_GPU, launcher: GPU occlusion; HookLink VX1rc_6) ----------
+// A render condition on samples-passed reports whose submission has not completed is unknown at replay, and NVN draws its block (rc_value): on an iPhone 18 Pro Max running behind,
+// half of Ocarina of Time's conditions (about 150 a frame, 4.4 million in a 25-minute VX1rc_5 run), where the foliage behind Hyrule Field's hills costs about 9 ms. Metal has no
+// predication, so the GPU decides it instead: the report's value is the sum of the visibility slots counted since its epoch began (Occlusion queries), and the slots of an earlier
+// submission are written before this one runs (the queue order and the full barrier of a compute encoder). So the condition becomes a job (its slots, the value it compares with,
+// its mode), each draw of its block an indirect draw whose arguments the CPU writes here and occ_kernel zeroes (its instance or threadgroup count) when the condition is false.
+// The kernel runs once a submission, before the first block it decides (occ_ensure ends the open pass for it); jobs added later in the submission are in its buffer before the GPU
+// runs it, as is the count of its threads (an indirect dispatch). A condition this cannot decide (a slot of this submission, a slot buffer taken again since, a reset without
+// a known start, a block too long) is drawn as before. DM_NVN_OCC_GPU=0 turns it off
+enum { OCC_JOBS = 1024, OCC_SLOTS = 4096, OCC_PATCH = 4096, OCC_JOB_OFF = 64, OCC_SLOT_OFF = OCC_JOB_OFF + OCC_JOBS * 32, OCC_PATCH_OFF = OCC_SLOT_OFF + OCC_SLOTS * 8,
+       OCC_ARGS_OFF = OCC_PATCH_OFF + OCC_PATCH * 16, OCC_BYTES = OCC_ARGS_OFF + OCC_PATCH * 32 };
+static int occ_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_OCC_GPU"); v = !(e && !strcmp(e, "0")); MLOG("render conditions on pending occlusion results: %s (DM_NVN_OCC_GPU)", v ? "decided on the GPU" : "drawn, as NVN does"); } return v; }
+static uint32_t g_occ_epoch; static int g_occ_base0; static uint64_t g_occ_seq;
+static uint64_t g_occ_carry[32]; static uint8_t g_occ_carry_ring[32]; static uint32_t g_occ_carry_gen[32]; static int g_occ_carry_n, g_occ_carry_bad;   // slots folded at a submission's end: the next report's
+static __unsafe_unretained id<MTLBuffer> g_occ_buf; static uint8_t *g_occ_cpu; static uint64_t g_occ_gpu; static uint64_t g_occ_sub = ~0ull;   // this submission's job buffer (an arena block's), once a job needs it
+static uint64_t g_occ_jobs_n, g_occ_draws_n, g_occ_fallback_n, g_occ_kernels_n;
+static id<MTLComputePipelineState> g_occ_pso; static int g_occ_pso_failed;
+static int occ_ring_of(void *buf) { for (int i = 0; i < g_vis_ring_n; i++) if ((__bridge void *)g_vis_ring[i].buf == buf) return i; return -1; }
+static void occ_reset(int base0) { g_occ_epoch++; g_occ_base0 = base0; g_occ_last = NULL; g_occ_carry_n = 0; g_occ_carry_bad = 0; }
+// At a samples-passed report (OP_REPORT_COUNTER, before vis_clear): its slots, those folded at earlier submissions' ends first
+static void occ_report(uint64_t addr) {
+    rc_report *r = rc_find(addr); if (!r) return;
+    r->occ_seq = ++g_occ_seq; r->occ_epoch = g_occ_epoch; r->occ_base0 = (uint8_t)g_occ_base0; r->occ_first = g_occ_last == NULL;
+    r->occ_prev = g_occ_last; r->occ_prev_seq = g_occ_last ? g_occ_last->occ_seq : 0; g_occ_last = r;
+    int n = 0, bad = g_occ_carry_bad;
+    for (int i = 0; i < g_occ_carry_n && !bad; i++) { if (n == 4) { bad = 1; break; } r->occ_gpu[n] = g_occ_carry[i]; r->occ_ring[n] = g_occ_carry_ring[i]; r->occ_gen[n] = g_occ_carry_gen[i]; n++; }
+    for (int i = 0; i < g_nvs && !bad; i++) { int k = occ_ring_of(g_vs[i].buf); if (k < 0 || n == 4) { bad = 1; break; }
+        r->occ_gpu[n] = g_vis_ring[k].buf.gpuAddress + (uint64_t)g_vs[i].slot * 8; r->occ_ring[n] = (uint8_t)k; r->occ_gen[n] = g_vis_ring[k].gen; n++; }
+    r->occ_n = bad ? 255 : (uint8_t)n; g_occ_carry_n = 0; g_occ_carry_bad = 0;
+}
+// At a submission's end (VIS_FOLD): its slots after its last report go to the next report's value
+static void occ_fold(void) {
+    for (int i = 0; i < g_nvs; i++) { int k = occ_ring_of(g_vs[i].buf); if (k < 0 || g_occ_carry_n == 32) { g_occ_carry_bad = 1; return; }
+        g_occ_carry[g_occ_carry_n] = g_vis_ring[k].buf.gpuAddress + (uint64_t)g_vs[i].slot * 8; g_occ_carry_ring[g_occ_carry_n] = (uint8_t)k; g_occ_carry_gen[g_occ_carry_n] = g_vis_ring[k].gen; g_occ_carry_n++; }
+}
+static const char k_occ_msl[] =
+    "#include <metal_stdlib>\nusing namespace metal;\n"
+    "struct Job { uint mode; uint n; uint first; uint pad; ulong cmp; ulong pad2; };\n"
+    "struct Slot { device const ulong *p; };\n"
+    "struct Patch { device uint *dst; uint job; uint pad; };\n"
+    "kernel void occ_kernel(device uchar *base [[buffer(0)]], uint gid [[thread_position_in_grid]]) {\n"
+    "  device const uint *hdr = (device const uint *)base; if (gid >= hdr[0]) return;\n"
+    "  Patch p = ((device const Patch *)(base + " "%d" "))[gid]; Job j = ((device const Job *)(base + " "%d" "))[p.job];\n"
+    "  device const Slot *sl = (device const Slot *)(base + " "%d" "); ulong s = 0; for (uint i = 0; i < j.n; i++) s += *sl[j.first + i].p;\n"
+    "  bool eq = s == j.cmp; if (j.mode ? eq : !eq) *p.dst = 0;\n"
+    "}\n";
+static int occ_pso(void) {
+    if (g_occ_pso || g_occ_pso_failed) return g_occ_pso != nil;
+    char src[1600]; snprintf(src, sizeof src, k_occ_msl, OCC_PATCH_OFF, OCC_JOB_OFF, OCC_SLOT_OFF);
+    NSError *e = nil; id<MTLLibrary> lib = [g_dev newLibraryWithSource:@(src) options:nil error:&e]; id<MTLFunction> fn = [lib newFunctionWithName:@"occ_kernel"];
+    if (fn) g_occ_pso = [g_dev newComputePipelineStateWithFunction:fn error:&e];
+    if (!g_occ_pso) { g_occ_pso_failed = 1; MLOG("[RED] GPU occlusion: cannot build its kernel (%s); conditions on pending results are drawn", e.localizedDescription.UTF8String); }
+    return g_occ_pso != nil;
+}
+// This submission's job buffer and the kernel before the draws it decides: once a submission, at its first job. 0: none (the condition is drawn)
+static int occ_ensure(void) {
+    if (g_occ_sub == g_fence && g_occ_cpu) return 1;
+    if (!occ_pso()) return 0;
+    __strong id<MTLBuffer> b = nil; size_t off = arena_alloc(OCC_BYTES, &b); if (!b) return 0;
+    g_occ_buf = b; g_occ_cpu = (uint8_t *)b.contents + off; g_occ_gpu = b.gpuAddress + off; g_occ_sub = g_fence;
+    memset(g_occ_cpu, 0, OCC_JOB_OFF); uint32_t *hdr = (uint32_t *)(void *)g_occ_cpu; hdr[5] = hdr[6] = 1;   // {patches, jobs, slots, -, tg x, 1, 1}
+    rp_end(); ubd_land(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
+    id<MTL4ComputeCommandEncoder> ce = enc_c_begin(NULL); enc_c_pso(ce, g_occ_pso); enc_c_args(ce, g_occ_gpu, 0);
+    enc_c_dispatch_indirect(ce, g_occ_gpu + 16, MTLSizeMake(64, 1, 1)); enc_c_end(ce);   // the next pass begins with a full barrier (m4_end)
+    g_occ_kernels_n++;
+    return 1;
+}
+// One operand's value as slots summed: walk from rep back to stop (exclusive; NULL: to its epoch's start). 0 when a slot is not usable from here
+static int occ_walk(rc_report *rep, rc_report *stop, uint64_t *slots, int *n, int cap) {
+    for (int steps = 0; rep && rep != stop; steps++) {
+        if (steps > 16 || rep->occ_n == 255 || !rep->occ_seq) return 0;
+        for (int i = 0; i < rep->occ_n; i++) { int k = rep->occ_ring[i];
+            if (k >= g_vis_ring_n || g_vis_ring[k].gen != rep->occ_gen[i] || (g_vis_ring_i == k) || *n == cap) return 0;   // taken again since, or this submission's own
+            slots[(*n)++] = rep->occ_gpu[i]; }
+        if (rep->occ_first) { if (stop) return 0; break; }
+        rc_report *pv = rep->occ_prev; if (!pv || pv->occ_seq != rep->occ_prev_seq || pv->occ_epoch != rep->occ_epoch) return 0;
+        rep = pv;
+    }
+    return 1;
+}
+// A condition rc_value could not decide (mode 1: draw if the two differ, 0: if equal): a job. -1 when this cannot decide it either
+static int occ_job(const p_render_cond *rc) {
+    if (!occ_on()) return -1;
+    rc_report *a = rc_find(rc->addr), *b = rc_find(rc->addr + 16); uint64_t slots[32]; int n = 0; uint64_t cmp = 0, kv = 0;
+    int ka = a && a->occ_seq && a->occ_n != 255, kb = b && b->occ_seq && b->occ_n != 255;
+    if (ka && kb && a->occ_epoch == b->occ_epoch) {   // two reports of one epoch: equal when nothing was counted between them
+        rc_report *lo = a->occ_seq < b->occ_seq ? a : b, *hi = lo == a ? b : a;
+        if (!occ_walk(hi, lo, slots, &n, 32)) return -1;
+    } else if (ka && !kb && a->occ_base0 && rc_value(rc->addr + 16, &kv) == 1) { if (!occ_walk(a, NULL, slots, &n, 32)) return -1; cmp = kv; }   // a report from a reset against a known word
+    else if (kb && !ka && b->occ_base0 && rc_value(rc->addr, &kv) == 1) { if (!occ_walk(b, NULL, slots, &n, 32)) return -1; cmp = kv; }
+    else return -1;
+    if (!occ_ensure()) return -1;
+    uint32_t *hdr = (uint32_t *)(void *)g_occ_cpu;
+    if (hdr[1] >= OCC_JOBS || hdr[2] + (uint32_t)n > OCC_SLOTS) return -1;
+    uint32_t j = hdr[1]++, first = hdr[2]; hdr[2] += (uint32_t)n;
+    memcpy(g_occ_cpu + OCC_SLOT_OFF + (size_t)first * 8, slots, (size_t)n * 8);
+    struct { uint32_t mode, n, first, pad; uint64_t cmp, pad2; } job = {rc->mode ? 1u : 0u, (uint32_t)n, first, 0, cmp, 0};
+    memcpy(g_occ_cpu + OCC_JOB_OFF + (size_t)j * 32, &job, sizeof job);
+    for (int i = 0; i < n; i++) { int k = -1; for (int q = 0; q < g_vis_ring_n; q++) if (g_vis_ring[q].buf.gpuAddress <= slots[i] && slots[i] < g_vis_ring[q].buf.gpuAddress + VIS_SLOTS * 8) k = q;
+        if (k >= 0 && g_vis_ring[k].fence != UINT64_MAX && g_vis_ring[k].fence < g_fence + 1) g_vis_ring[k].fence = g_fence + 1; }   // its buffer is not taken again before this submission completes
+    g_occ_jobs_n++;
+    return (int)j;
+}
+static uint64_t occ_args(const void *a, size_t n, uint32_t field) {
+    if (g_occ_job < 0 || g_occ_sub != g_fence || !g_occ_cpu || n > 32) return 0;
+    uint32_t *hdr = (uint32_t *)(void *)g_occ_cpu; if (hdr[0] >= OCC_PATCH) { g_occ_fallback_n++; return 0; }
+    uint32_t i = hdr[0]; uint64_t args = g_occ_gpu + OCC_ARGS_OFF + (uint64_t)i * 32;
+    memcpy(g_occ_cpu + OCC_ARGS_OFF + (size_t)i * 32, a, n);
+    struct { uint64_t dst; uint32_t job, pad; } pt = {args + field, (uint32_t)g_occ_job, 0}; memcpy(g_occ_cpu + OCC_PATCH_OFF + (size_t)i * 16, &pt, sizeof pt);
+    hdr[0] = i + 1; hdr[4] = (i + 1 + 63) / 64;
+    g_occ_draws_n++;
+    return args;
+}
 static void dispatch(const p_dispatch *dp);
 static int up_mfx_wanted(NvShader *cs); static int up_mfx_encode(NvShader *cs);   // a game's upscaler through MetalFX (see up_mfx_encode)
 static int ndve_engine_dispatch(NvShader *cs, const p_dispatch *dp);   // nn::ndve's movie network as the host's kernels (DM_NDVE_ENGINE=1, nvn_ndve.inc)
@@ -16055,15 +16183,17 @@ void mtl_exec(const uint8_t *p) {
                 rc_note(ad, t == 0 || t == 0x10 ? 1 : t == NVN_COUNTER_TYPE_SAMPLES_PASSED ? 2 : 3);
                 if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) {
                     if (!g_vis_on) {   // a report with no reset before it: the counter runs from the queue's creation, so counting starts here (Occlusion queries)
-                        g_vis_on = 1; g_vis_counting = 1; MLOG("occlusion queries: samples passed reported with no ResetCounter before it: counting from this report");
+                        g_vis_on = 1; g_vis_counting = 1; occ_reset(0); MLOG("occlusion queries: samples passed reported with no ResetCounter before it: counting from this report");
                         if (g_enc && !g_enc_has_vis) { PD("M %llu occlusion query counting starts at a report: render pass split here", g_stat_pass); rp_end(); } }
-                    hw_note(ad); post((post_op){3, NULL, VIS_REPORT, 0, ad, (uint32_t)t, vis_snapshot()}); vis_clear(); }   // written at completion, as a counter report
+                    hw_note(ad); occ_report(ad); post((post_op){3, NULL, VIS_REPORT, 0, ad, (uint32_t)t, vis_snapshot()}); vis_clear(); }   // written at completion, as a counter report
                 else mtl_sub_counter(ad, (uint32_t)t);
                 break; }
             case OP_RENDER_COND: { const p_render_cond *rc = a;   // SetRenderEnable / SetRenderEnableConditional (hle_nvn.c)
+                g_occ_job = -1;
                 if (rc->mode >= 2) { g_rc_skip = rc->mode == 3; PD("E %llu render enable %d", g_stat_pass, rc->mode == 2); }
                 else { uint64_t x = 0, y = 0; int ka = rc_value(rc->addr, &x), kb = rc_value(rc->addr + 16, &y), known = ka && kb;
                     g_rc_skip = known && (rc->mode ? x == y : x != y);
+                    if (!known) { g_occ_job = occ_job(rc); if (g_occ_job >= 0) g_rc_st_gpu++; }   // decided on the GPU (occ_job), or drawn
                     if (!known) g_rc_st_unknown++; else if (ka == 2 || kb == 2) g_rc_st_stale++; else g_rc_st_known++;
                     g_rc_st_skipped += g_rc_skip;
                     PD("E %llu conditional render %s addr=%#llx values %llu / %llu%s%s", g_stat_pass, rc->mode ? "draw if not equal" : "draw if equal", (unsigned long long)rc->addr, (unsigned long long)x, (unsigned long long)y, known ? "" : " (unknown, drawn)", g_rc_skip ? " → not drawn" : ""); }
@@ -16072,7 +16202,7 @@ void mtl_exec(const uint8_t *p) {
                 PD("Y fence_sync cmd=%p sync=%p fence=%llu", p, (void *)s, (unsigned long long)s->fence); break; }
             case OP_RESET_COUNTER: { uint64_t t; memcpy(&t, a, 8); g_cnt_reset[t & 31]++; PD("Q reset type=%llu cmd=%p", (unsigned long long)t, p);
                 if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) {
-                    g_vis_on = 1; g_vis_counting = 1; vis_clear(); post((post_op){3, NULL, VIS_ZERO, 0, 0, (uint32_t)t, NULL});
+                    g_vis_on = 1; g_vis_counting = 1; vis_clear(); post((post_op){3, NULL, VIS_ZERO, 0, 0, (uint32_t)t, NULL}); occ_reset(1);
                     // The first reset can come inside a render pass that was begun without a visibility buffer (Octopath Traveler 0: Unreal's occlusion queries, once at boot): split the pass
                     // here, so the continuation is begun with the buffer and its samples are counted (they used not to be: RED "occlusion query counting began in a pass without a visibility buffer")
                     if (g_enc && !g_enc_has_vis) { PD("M %llu occlusion query counting starts: render pass split here", g_stat_pass); rp_end(); } }
@@ -16142,8 +16272,8 @@ void mtl_exec(const uint8_t *p) {
                 if (!g_rc_skip) draw_multi(a);
                 g_mdx_epoch++;
                 break;
-            case OP_DRAW: { if (g_rc_skip) break; p_draw t; g_exec_cur = p; g_exec_next = p + h.size; draw(draw_rec(a, h.size, &t), NULL); g_exec_next = NULL; break; }   // Lookahead start point
-            case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; g_exec_cur = p; g_exec_next = p + h.size; draw(NULL, draw_idx_rec(a, h.size, &t)); g_exec_next = NULL; break; }
+            case OP_DRAW: { if (g_rc_skip) break; p_draw t; g_exec_cur = p; g_exec_next = p + h.size; g_occ_draw = 1; draw(draw_rec(a, h.size, &t), NULL); g_occ_draw = 0; g_exec_next = NULL; break; }   // Lookahead start point
+            case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; g_exec_cur = p; g_exec_next = p + h.size; g_occ_draw = 1; draw(NULL, draw_idx_rec(a, h.size, &t)); g_occ_draw = 0; g_exec_next = NULL; break; }
             // Do not mark dirty if the state did not change (the game often re-sends the same program / state block / vertex format before each draw; the dirty flag only decides whether to re-fetch the pipeline / depth-stencil object, and equal values mean the same object)
             case OP_BIND_PROGRAM: { const p_bind_program *b = a; state_op(h.op,a);
                 if (passdump()) { NvProg *pr = S.prog ? prog_get(S.prog) : nil;

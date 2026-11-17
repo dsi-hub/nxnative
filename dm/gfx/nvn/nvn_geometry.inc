@@ -758,7 +758,12 @@ static void mtk_encode(id<MTLRenderCommandEncoder> en_) {
     MTLSize to = MTLSizeMake(ts ? ts->mesh_threads : 1, 1, 1), tm = MTLSizeMake(ms->mesh_threads, 1, 1);
     if (g_mtk.ind) za_check(g_mtk.ind, "indirect mesh draw record", -1);
     if (g_mtk.ind) [en drawMeshThreadgroupsWithIndirectBuffer:g_mtk.ind + (ts ? 0 : 16) threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
-    else [en drawMeshThreadgroups:MTLSizeMake(ts ? g_mtk.count : (g_mtk.count + DMSH_MESH_GRID - 1) / DMSH_MESH_GRID, 1, 1) threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
+    else {
+        uint32_t gx = ts ? g_mtk.count : (g_mtk.count + DMSH_MESH_GRID - 1) / DMSH_MESH_GRID;
+        uint64_t ind = 0; if (g_occ_job >= 0 && g_occ_draw) { uint32_t a3[3] = {gx, 1, 1}; ind = occ_args(a3, sizeof a3, 0); }   // under a GPU-decided condition (occ_job): its threadgroups zeroed when false
+        if (ind) [en drawMeshThreadgroupsWithIndirectBuffer:ind threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
+        else [en drawMeshThreadgroups:MTLSizeMake(gx, 1, 1) threadsPerObjectThreadgroup:to threadsPerMeshThreadgroup:tm];
+    }
 }
 // DrawMeshTasksIndirect: {count, first}, which the game's culling writes earlier in the submission, while Metal's indirect mesh draw takes {x, y, z}. mdx_run copies the count to a {count, 1, 1} on the
 // GPU (and the object blocks of a mesh shader with no task, mtk_encode), before the render pass and for every such draw up to the next write, and the task or object function reads
