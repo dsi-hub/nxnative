@@ -2272,9 +2272,28 @@ static rt_thr *rt_register(const char *name, int acq) {   // on the thread itsel
     rt_thr *t = &g_rtt[i]; rt_init(t, name, acq, rt_self_tid()); return t;
 }
 static int rt_allowed(const rt_thr *t) { return rt_on() && (t->acq || rt_frame_on()); }
+// kid-with-sword-remake L4 / L6.3: the share of the period each thread may declare (DM_RT_SHARE=<acquire>,<frame threads>, default 0.4,0.55 on iOS, 0.9,0.9 elsewhere as nxnative
+// has it). The iPhones this runs on (A17 Pro to A20 Pro) have two performance cores. With each declaring thread allowed 90 % of the period, an iPhone 18 Pro declared 14 + 30 + 20 ms
+// of a 33 ms frame (cheemu21's log 35), more real-time work than two cores hold, so the game's own workers, which the main thread waits for every frame, ran behind them. HookLink X1
+// logs from an iPhone 17 Pro showed the same: the acquire, presenting and queue replay threads each declared 15.0 of 16.7 ms. L6.3 moved 0.5 / 0.3 to 0.4 / 0.55, as a hot phone's
+// replay thread needed more than 10 ms of a 33 ms frame. The presenting thread (rt_present_tick) is a frame thread here. The Mac keeps 0.9
+static double rt_share(int acq) {
+    static double a = -1, f = -1;
+    if (a < 0) {
+#if TARGET_OS_IPHONE
+        a = 0.4; f = 0.55;
+#else
+        a = 0.9; f = 0.9;
+#endif
+        const char *e = getenv("DM_RT_SHARE"); double x, y;
+        if (e && sscanf(e, "%lf,%lf", &x, &y) == 2 && x > 0 && x <= 0.9 && y > 0 && y <= 0.9) { a = x; f = y; }
+        LOG("[nvn] time-constraint computation capped at %.2f of the period (acquire thread), %.2f (frame threads) (DM_RT_SHARE)", a, f);
+    }
+    return acq ? a : f;
+}
 static void rt_declare(rt_thr *t, uint64_t period_ns, double comp_ms) {
     static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb);
-    double cap = period_ns * 0.9 / 1e6; if (comp_ms > cap) comp_ms = cap; if (comp_ms < 1) comp_ms = 1;
+    double cap = period_ns * rt_share(t->acq) / 1e6; if (comp_ms > cap) comp_ms = cap; if (comp_ms < 1) comp_ms = 1;
     uint64_t comp_ns = (uint64_t)(comp_ms * 1e6);
     thread_time_constraint_policy_data_t p = {
         .period = (uint32_t)(period_ns * tb.denom / tb.numer), .computation = (uint32_t)(comp_ns * tb.denom / tb.numer),
@@ -2360,7 +2379,7 @@ static void rt_line(char *b, size_t n) {
 // read the wrong thread), and the presenting thread is the one that records and translates the frame: 16-21 ms of CPU a frame in Hyrule Field on an iPhone 17 Pro, at 1.3-1.7 GHz with
 // 4-45 % on performance cores (HookLink issue 3), and 33-47 % in the adult world on an iPhone 18 Pro Max. The acquire thread's declaration never reached it, so iOS kept it on the
 // efficiency cores. At each present a thread that is not the acquire thread declares the same period with its own computation: the larger of 1.25 x the p90 and 1.1 x the peak of its
-// CPU time per frame over 120 frames (as rt_comp_tick), capped at 0.9 x the period, re-declared when it moves by 15 %. DM_RT_PRESENT=0 leaves it as it was; DM_RT=0 turns off both
+// CPU time per frame over 120 frames (as rt_comp_tick), capped at the frame threads' share of the period (rt_share), re-declared when it moves by 15 %. DM_RT_PRESENT=0 leaves it as it was; DM_RT=0 turns off both
 static void rt_present_tick(uint64_t period_ns) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_RT_PRESENT"); on = rt_on() && !(e && !strcmp(e, "0")); if (!on) LOG("[nvn] DM_RT_PRESENT=0: the presenting thread gets no time-constraint policy of its own"); }
     if (!on || !period_ns) return;
@@ -2373,7 +2392,7 @@ static void rt_present_tick(uint64_t period_ns) {
     win[n++] = (double)(c - last) / 1e6; last = c;
     if (n < 120) return;
     double v[120]; memcpy(v, win, sizeof v); qsort(v, 120, sizeof *v, dcmp); n = 0;
-    double comp = fmax(v[107] * 1.25, v[119] * 1.1), cap = period_ns * 0.9 / 1e6; if (comp > cap) comp = cap; if (comp < 1) comp = 1;
+    double comp = fmax(v[107] * 1.25, v[119] * 1.1), cap = period_ns * rt_share(0) / 1e6;   /* a frame thread's share (DM_RT_SHARE) */ if (comp > cap) comp = cap; if (comp < 1) comp = 1;
     if (declared && comp <= declared * 1.15 && comp >= declared * 0.85) return;
     thread_time_constraint_policy_data_t p = {
         .period = (uint32_t)(period_ns * tb.denom / tb.numer), .computation = (uint32_t)(comp * 1e6 * tb.denom / tb.numer),

@@ -10579,6 +10579,58 @@ static __unsafe_unretained id<MTLRenderPipelineState> sm_amp_get(const pso_key *
         os_unfair_lock_lock(&g_sm_amp_lock); g_sm_amp[i].ps = ps; g_sm_amp[i].done = 1; os_unfair_lock_unlock(&g_sm_amp_lock); });
     return nil;
 }
+// DM_PSO_NOWAIT (default: on in an app, where the prepare step runs; 0: the draw waits, as before): a draw whose pipeline needs a compile and has no stand-in is skipped while a
+// worker builds it (pso_get_)
+static int pso_nowait_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_PSO_NOWAIT"); v = e && *e ? atoi(e) != 0 : prepare_on(); if (v) MLOG("pipelines that need a compile and have no stand-in are built in the background, their draws skipped meanwhile (DM_PSO_NOWAIT=0: the draw waits)"); }
+    return v;
+}
+// The pipelines DM_PSO_NOWAIT builds: keyed by the draw's pso_key, NSNull while a worker builds it, the pipeline once built (taken by the next draw of that key, which puts it in
+// g_pso and removes it here), or a failure marker (the draw then builds it itself, for its message). Their own table, not the pending-build table: that table hands a finished slot
+// that no draw took to the next build, so with many builds in flight (a cold cache) a finished pipeline was lost before its draw came back and its draws were skipped for good
+static NSMutableDictionary<NSData *, id> *g_nw; static pthread_mutex_t g_nw_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_nw_cv = PTHREAD_COND_INITIALIZER; static NSNumber *g_nw_failed;
+// The wait: a draw waits for its build up to what is left of the frame's budget (DM_PSO_NOWAIT_MS, default 50 ms a frame, all draws together), then is skipped until it is built.
+// A skipped draw can leave an object half drawn for the frames its compile takes (a pass of its, as the colour or the lighting of a character, missing: the Mac's cold-cache test drew
+// Link as a pale shape), so a compile that ends within the budget is waited for; one that does not (a base compile on a hot iPhone, 0.3-1.0 s) no longer stops the game for it
+static double nw_budget_ms(void) { static double v = -1; if (v < 0) { const char *e = getenv("DM_PSO_NOWAIT_MS"); v = e && *e ? atof(e) : 50; if (!(v >= 0)) v = 50; } return v; }
+static dispatch_queue_t nw_queue(void) {   // the builds' own queue: as many at once as Metal compiles side by side, at user-initiated QoS (a draw is missing meanwhile)
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("dm.nvn.pso-nowait", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_CONCURRENT, QOS_CLASS_USER_INITIATED, 0)); });
+    return q;
+}
+static id<MTLRenderPipelineState> pso_nw_get(const pso_key *k, NvShader *vs, NvShader *fs, int *fresh) {
+    static dispatch_semaphore_t sem; static dispatch_once_t once; static uint64_t frame = UINT64_MAX, spent_ns;
+    dispatch_once(&once, ^{ int pc = 0; size_t sz = sizeof pc; if (sysctlbyname("hw.perflevel0.physicalcpu", &pc, &sz, NULL, 0) || pc < 2) pc = 2;
+        sem = dispatch_semaphore_create(pc); g_nw = [NSMutableDictionary dictionary]; g_nw_failed = @0; });
+    NSData *kd = [NSData dataWithBytes:k length:sizeof *k]; *fresh = 0;
+    uint64_t f = atomic_load(&g_cur_frame); if (f != frame) { frame = f; spent_ns = 0; }
+    pthread_mutex_lock(&g_nw_mu); id v = g_nw[kd];
+    if (!v) {
+        g_nw[kd] = NSNull.null; *fresh = 1;
+        MTLRenderPipelineDescriptor *d = pso_desc(k, vs, fs, nil, 0); int off = !k->border;
+        dispatch_async(nw_queue(), ^{
+            dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+            NSError *e = nil; id<MTLRenderPipelineState> built = pso_build(d, off, &e);
+            dispatch_semaphore_signal(sem);
+            pthread_mutex_lock(&g_nw_mu); g_nw[kd] = built ? (id)built : (id)g_nw_failed; pthread_cond_broadcast(&g_nw_cv); pthread_mutex_unlock(&g_nw_mu);
+        });
+        v = NSNull.null;
+    }
+    uint64_t budget = (uint64_t)(nw_budget_ms() * 1e6);
+    if (v == NSNull.null && spent_ns < budget) {   // wait for it within what is left of this frame's budget
+        uint64_t t0 = bp_now(), until = t0 + (budget - spent_ns);
+        struct timeval tv; gettimeofday(&tv, NULL);
+        uint64_t wall = (uint64_t)tv.tv_sec * 1000000000ull + (uint64_t)tv.tv_usec * 1000ull + (budget - spent_ns);
+        struct timespec ts = {(time_t)(wall / 1000000000ull), (long)(wall % 1000000000ull)};
+        while ((v = g_nw[kd]) == NSNull.null && bp_now() < until) if (pthread_cond_timedwait(&g_nw_cv, &g_nw_mu, &ts)) break;
+        v = g_nw[kd]; spent_ns += bp_now() - t0;
+    }
+    if (v && v != NSNull.null) [g_nw removeObjectForKey:kd];   // built (the draw puts it in g_pso), or failed (its draw builds it and reports the failure)
+    pthread_mutex_unlock(&g_nw_mu);
+    if (v == g_nw_failed) { *fresh = -1; return nil; }
+    return v == NSNull.null ? nil : v;
+}
 static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRenderPassDescriptor *unused) {
     (void)unused;
     g_pso_pull = 0;   // set again only where a pulling pipeline is returned: a stale 1 made the next draw, whose pipeline came from the cache, bind the layout block instead of its streams
@@ -10626,6 +10678,20 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
                     g_pso_pull = 1; g_hy_ns += bp_now() - bt;
                     if (pso_predict_due(st == 0)) { uint64_t t0 = bp_now(); pso_predict_rest(); g_bp_pso_ns += bp_now() - t0; }
                     return h;
+                }
+                // kid-with-sword-remake L5: no stand-in either (the pair's pulling base is not made yet, or the vertex shader has none): the draw's pipeline is built in the
+                // background and the draw is skipped until it is there, as a task / mesh draw is (DM_MESH_ASYNC). Before, the draw waited for the compile on the submit thread:
+                // an iPhone 18 Pro in its serious thermal state compiled a base in 0.3-1.0 s (log 36: 19 in 15.7 s), and frames of 361, 570, 982 and 472 ms were such waits
+                if (pso_nowait_on()) {
+                    int fresh = 0; id<MTLRenderPipelineState> got = pso_nw_get(&k, vs, fs, &fresh);
+                    if (got) { ps = got; took = 1; }
+                    else if (fresh >= 0) {
+                        static uint64_t skips; static int lg = 24;
+                        if (fresh && lg > 0) { lg--; MLOG("pipeline not built yet: vertex %s fragment %s is built in the background, its draws skipped meanwhile (%s)", vs->key, fs ? fs->key : "-", g_pw_why[why]); }
+                        uint64_t sk = ++skips; if (!(sk & (sk - 1)) && sk >= 1024) MLOG("draws skipped for a pipeline in the background: %llu so far", (unsigned long long)sk);
+                        g_hy_ns += bp_now() - bt;
+                        return nil;
+                    }
                 }
             }
         }
@@ -11649,7 +11715,15 @@ static uint64_t pool_walk(int samp, int dtt, int dpf, int base, __unsafe_unretai
 // TU_IDLE, a target the game still reads every frame stays. Their texture IDs drop their views, so a pool walk gives them the dummy until a pass writes the texture again
 // (pool_unwritten_target), as for a target never written, rather than making it again; a binding or a write makes it again (tex_mtl_), filled as a new texture is. TU_MAX a pass at
 // most: each serial that goes is a note, and past SER_NOTES of them every texture ID takes the slow path once
-enum { TU_IDLE = 30, TU_MAX = 256 };   // deciseconds; textures a pass
+// kid-with-sword-remake L6.3: 32 a pass (256 before), a pass every 0.2 s (TU_EVERY; once a second before). A pass of more than SER_NOTES (64) serials overflows the notes, so
+// the next submission starts a new epoch and every texture ID takes the slow path (ser_sync): on an iPhone 18 Pro after an area change, when about 100 targets a second went,
+// that was a 120-250 ms frame once a second (logs 42, 46, 47; none with DM_NVN_RT_DEAD=0, log 48). 32 stays under the notes with room for the ghost trim's (GHOST_TRIM), and
+// five passes a second still free up to 160
+enum { TU_IDLE = 30, TU_MAX_DEF = 32, TU_EVERY_DEF = 2 };   // deciseconds; textures a pass; deciseconds between passes
+// DM_NVN_RT_DEAD_MAX / DM_NVN_RT_DEAD_EVERY override the two (for A/B runs: 256 and 10 are the pacing before L6.3)
+static uint32_t tu_env(const char *name, uint32_t def) { const char *e = getenv(name); int v = e && *e ? atoi(e) : 0; return v > 0 ? (uint32_t)v : def; }
+#define TU_MAX (tu_env("DM_NVN_RT_DEAD_MAX", TU_MAX_DEF))
+#define TU_EVERY (tu_env("DM_NVN_RT_DEAD_EVERY", TU_EVERY_DEF))
 static uint32_t g_tu_last;   // g_tu_now at the last pass
 static uint64_t g_tu_n, g_tu_bytes, g_tu_serials, g_tu_pinned, g_tu_ns, g_tu_passes;
 static int tu_use_of(id o, own_use *u) {   // own_use_fn; the pass's mark keeps the record (the sweep below)
@@ -11715,7 +11789,7 @@ static void tu_tick(void) {   // when a submission begins; DM_NVN_RT_DEAD=0 keep
     if (g_tu_manual) return;
     static uint64_t t0; uint64_t ns = clock_gettime_nsec_np(CLOCK_UPTIME_RAW); if (!t0) t0 = ns;
     g_tu_now = (uint32_t)((ns - t0) / 100000000ull) + 1;
-    if (g_tu_now - g_tu_last >= 10 && sw_on(tu_mode())) tu_pass();
+    if (g_tu_now - g_tu_last >= TU_EVERY && sw_on(tu_mode())) tu_pass();
 }
 static id<MTLBuffer> dummy_buf(void) { static id<MTLBuffer> b; if (!b) { b = [g_dev newBufferWithLength:64 << 10 options:MTLResourceStorageModeShared]; res_add(b); } return b; }
 static uint64_t dummy_buf_gpu(void) { static uint64_t gpu; if (!gpu) gpu = dummy_buf().gpuAddress; return gpu; }
