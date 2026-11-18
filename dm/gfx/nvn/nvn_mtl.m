@@ -14318,7 +14318,7 @@ static int lc_keeps(uint32_t op) {
 // a known start, a block too long) is drawn as before. DM_NVN_OCC_GPU=0 turns it off
 enum { OCC_JOBS = 1024, OCC_SLOTS = 4096, OCC_PATCH = 4096, OCC_JOB_OFF = 64, OCC_SLOT_OFF = OCC_JOB_OFF + OCC_JOBS * 32, OCC_PATCH_OFF = OCC_SLOT_OFF + OCC_SLOTS * 8,
        OCC_ARGS_OFF = OCC_PATCH_OFF + OCC_PATCH * 16, OCC_BYTES = OCC_ARGS_OFF + OCC_PATCH * 32 };
-static int occ_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_OCC_GPU"); v = !(e && !strcmp(e, "0")); MLOG("render conditions on pending occlusion results: %s (DM_NVN_OCC_GPU)", v ? "decided on the GPU" : "drawn, as NVN does"); } return v; }
+static int occ_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_OCC_GPU"); v = e && atoi(e) > 0;   /* off unless asked for: HookLink X2 hotfix (GPU page faults after area loads, one of two suspects) */ MLOG("render conditions on pending occlusion results: %s (DM_NVN_OCC_GPU)", v ? "decided on the GPU" : "drawn, as NVN does"); } return v; }
 static uint32_t g_occ_epoch; static int g_occ_base0; static uint64_t g_occ_seq;
 static uint64_t g_occ_carry[32]; static uint8_t g_occ_carry_ring[32]; static uint32_t g_occ_carry_gen[32]; static int g_occ_carry_n, g_occ_carry_bad;   // slots folded at a submission's end: the next report's
 static __unsafe_unretained id<MTLBuffer> g_occ_buf; static uint8_t *g_occ_cpu; static uint64_t g_occ_gpu; static uint64_t g_occ_sub = ~0ull;   // this submission's job buffer (an arena block's), once a job needs it
