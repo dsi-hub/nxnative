@@ -250,7 +250,9 @@ def wide_view(ctx):
         fs_put(site, [B(site, start)], f'wide view: a 16:9 camera aspect set here takes the picture\'s ratio (site {k})')
     wide_hud(ctx)
 
-# Wide view's HUD, menus and movies in the middle 16:9 (DM_WIDE_HUD, on with Wide view). The sites are Ivan0xFF's (MIT, "The matrix-update, UI and movie sites: Copyright (c)
+# Wide view's HUD, menus and movies in the middle 16:9 (DM_WIDE_HUD, on with Wide view). On a squarer picture (the iPhone Duo's 1.42:1) the second row is squeezed
+# instead (state +0x180, the picture's ratio over 16:9; +0x160 is 1 there): the 2D layer is a 16:9 band across the middle, as Tears of the Kingdom's screen shape draws it
+# (words 38-39, ldr s17,[x16,#0x180]; fmul v4.4s,v4.4s,v17.s[0], assembled with clang; the skip branches moved past them). The sites are Ivan0xFF's (MIT, "The matrix-update, UI and movie sites: Copyright (c)
 # 2026 Ivan0xFF"), from NX2navi's recomp/patches-v111.txt, for this same build (e0f3ccfa); written here as stubs of our own, which change no flags.
 # - The 2D canvas setup (main+0x774330) loads a layout's projection rows at main+0x774368 (ldp q1, q4, [x2]; the canvas is x0, its screen 0x1b8 before it). When the projection is
 #   the full-screen orthographic one of the 3840x2160 layout grid (m00 = 2/3840, m11 = 2/2160, compared by their bits), its first row is multiplied by the squeeze (state +0x160:
@@ -259,14 +261,17 @@ def wide_view(ctx):
 #   whole picture, and the event and loading fades (main+0x4be61c8, main+0x4be7b30) must cover it all. Count at state +0x168. x16, x17 and v16 are free there (a leaf; v16..v19 are
 #   written next).
 # - The movie layer's draw (main+0x3b5c71c) builds a viewport over the whole picture at x29 - 40 (min x +8, max x +16); after ldp x9, x8, [x19, #0x18] (main+0x3b5c758) it moves in
-#   by the margin on each side (state +0x164: (1 - squeeze) / 2 of the width), the middle 16:9. Count at state +0x16c. x16, x17 and s16..s19 are free there.
+#   by the margin on each side (state +0x164: (1 - squeeze) / 2 of the width), the middle 16:9. On a squarer picture min y +12 and max y +20 move in by +0x184
+#   ((1 - its squeeze) / 2 of the height) the same way, so a movie is 16:9 in the middle band (words 16-30, assembled with clang). Count at state +0x16c. x16, x17 and s16..s19 are free there.
 # The stubs' words were assembled with clang from the source in this comment's commit; nop placeholders are the patch-relative instructions written below
-hud_words = (0xAD401041, 0xD503201F, 0xBD416210, 0x1E260211, 0x34000451, 0x1E260031, 0x52911130, 0x72A74110, 0x4A110210, 0x350003B0, 0x0E0C3C91, 0x52973AD0, 0x72A74E50,
-             0x4A110210, 0x35000310, 0xD106E011, 0xF9400231, 0xD503201F, 0xD503201F, 0xCA110210, 0xB4000250, 0xD503201F, 0xD503201F, 0xCA110210, 0xB40001D0, 0xD503201F,
-             0xD503201F, 0xCA110210, 0xB4000150, 0xD503201F, 0xD503201F, 0xCA110210, 0xB40000D0, 0x4F909021, 0xD503201F, 0xB9416A11, 0x11000631, 0xB9016A11, 0xD503201F)
+hud_words = (0xAD401041, 0xD503201F, 0xBD416210, 0x1E260211, 0x34000491, 0x1E260031, 0x52911130, 0x72A74110, 0x4A110210, 0x350003F0, 0x0E0C3C91, 0x52973AD0, 0x72A74E50,
+             0x4A110210, 0x35000350, 0xD106E011, 0xF9400231, 0xD503201F, 0xD503201F, 0xCA110210, 0xB4000290, 0xD503201F, 0xD503201F, 0xCA110210, 0xB4000210, 0xD503201F,
+             0xD503201F, 0xCA110210, 0xB4000190, 0xD503201F, 0xD503201F, 0xCA110210, 0xB4000110, 0x4F909021, 0xD503201F, 0xB9416A11, 0x11000631, 0xB9016A11, 0xBD418211,
+             0x4F919084, 0xD503201F)
 hud_keep = (0x4bed098, 0x4be4fb0, 0x4be61c8, 0x4be7b30)   # item wheel background, pause / system menu backgrounds, event fade, loading fade
 movie_words = (0xD503201F, 0xBD416633, 0x1E260270, 0x340001B0, 0xD100A3B0, 0xBD400A10, 0xBD401211, 0x1E303A32, 0x1E330A52, 0x1E322A10, 0x1E323A31, 0xBD000A10,
-               0xBD001211, 0xB9416E30, 0x11000610, 0xB9016E30, 0xA941A269, 0xD503201F)
+               0xBD001211, 0xB9416E30, 0x11000610, 0xB9016E30, 0xBD418633, 0x1E260270, 0x340001B0, 0xD100A3B0, 0xBD400E10, 0xBD401611, 0x1E303A32, 0x1E330A52,
+               0x1E322A10, 0x1E323A31, 0xBD000E10, 0xBD001611, 0xB9416E30, 0x11000610, 0xB9016E30, 0xA941A269, 0xD503201F)
 def wide_hud(ctx):
     here, emit, fs_site, fs_put, FS_STATE_OFF = ctx.here, ctx.emit, ctx.site, ctx.put, ctx.state
     site = 0x774368
@@ -276,7 +281,7 @@ def wide_hud(ctx):
         if i in (1, 34): w = ADRP(16, here(), FS_STATE_OFF)                       # the state page
         elif i in (17, 21, 25, 29): pending = next(keep); w = ADRP(16, here(), pending)   # a vtable that keeps the whole picture: its page
         elif i in (18, 22, 26, 30): w = ADDI(16, 16, pending & 0xFFF)               # ... and its offset in the page
-        elif i == 38: w = B(here(), site + 4)                                         # back
+        elif i == 40: w = B(here(), site + 4)                                         # back
         emit(w)
     fs_put(site, [B(site, start)], 'wide view: the HUD and menus keep 16:9 in the middle of the picture (Ivan0xFF\'s site, via NX2navi)')
     site = 0x3b5c758
@@ -284,7 +289,7 @@ def wide_hud(ctx):
     start = here()
     for i, w in enumerate(movie_words):
         if i == 0: w = ADRP(17, here(), FS_STATE_OFF)
-        elif i == 17: w = B(here(), site + 4)
+        elif i == 32: w = B(here(), site + 4)
         emit(w)
     fs_put(site, [B(site, start)], 'wide view: movies in the middle 16:9 (Ivan0xFF\'s site, via NX2navi)')
 
