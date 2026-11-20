@@ -388,8 +388,14 @@ void dm_fps_state_apply(void) {
           // +0x160 the squeeze of the full-screen UI projection (16:9 over the picture's ratio) and +0x164 the movie's margin on each side, (1 - squeeze) / 2 of the width
           // (patches.py wide_hud, Ivan0xFF's sites): the HUD, menus and movies keep 16:9 in the middle of the picture. DM_WIDE_HUD=0 leaves them over the whole picture
           const char *wh = getenv("DM_WIDE_HUD"); int hud = !(wh && !strcmp(wh, "0"));
-          if (hud && wcam > 16.0f / 9.0f) { float sq = (16.0f / 9.0f) / wcam, mg = (1.0f - sq) / 2.0f;   /* (a squarer picture has no middle 16:9: the HUD and movies take its whole width, a little narrow) */ memcpy(dm_fps_state + 0x160, &sq, 4); memcpy(dm_fps_state + 0x164, &mg, 4);
+          // +0x180 the squeeze of its second row (1 when the picture is wider, its ratio over 16:9 when squarer: the iPhone Duo's 1.42:1, whose 16:9 middle band is ~80% of
+          // the height; without it the HUD was stretched vertically, round buttons as ovals) and +0x184 the movie's margin above and below, (1 - that) / 2 of the height
+          float one = 1.0f, zero = 0.0f; memcpy(dm_fps_state + 0x180, &one, 4); memcpy(dm_fps_state + 0x184, &zero, 4);
+          if (hud && wcam > 16.0f / 9.0f) { float sq = (16.0f / 9.0f) / wcam, mg = (1.0f - sq) / 2.0f; memcpy(dm_fps_state + 0x160, &sq, 4); memcpy(dm_fps_state + 0x164, &mg, 4);
                      LOG("%s: wide view: HUD, menus and movies in the middle %.1f%% (DM_WIDE_HUD)", g_fps_mod, sq * 100.0f); }
+          else if (hud && wcam < 16.0f / 9.0f - 0.01f) { float sy = wcam / (16.0f / 9.0f), my = (1.0f - sy) / 2.0f; memcpy(dm_fps_state + 0x160, &one, 4); memcpy(dm_fps_state + 0x180, &sy, 4);
+                     memcpy(dm_fps_state + 0x184, &my, 4);
+                     LOG("%s: wide view: HUD, menus and movies in the middle %.1f%% of the height (DM_WIDE_HUD, a squarer picture)", g_fps_mod, sy * 100.0f); }
           // The view size the game lays its screen out by (1.8's way to the HUD): with the squeeze above it would no longer be the 3840x2160 grid the HUD site matches, so it
           // stays the game's own unless DM_WIDE_VIEW_SIZE=1 asks for it
           { const char *vs = getenv("DM_WIDE_VIEW_SIZE"); float vw = vs ? (strcmp(vs, "0") ? (float)w2 : 0) : (hud || wcam < 16.0f / 9.0f ? 0 : (float)w2); memcpy(dm_fps_state + 0x118, &vw, 4);   // +0x118: the view size's width, the handheld render width (patches.py wide_sites: the HUD and menus are laid out by it); DM_WIDE_VIEW_SIZE=0: the game's own 1920
